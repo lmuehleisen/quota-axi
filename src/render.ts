@@ -98,7 +98,7 @@ export function renderQuotaToon(
             (provider) => !omit.has(provider.provider),
           ),
         };
-  const { quota, exhaustion, attention } = quotaBlocks(shown);
+  const { quota, exhaustion, attention } = quotaBlocks(shown, full);
   const blocks = [
     encode({
       bin: collapseHome(binPath),
@@ -121,7 +121,10 @@ export function renderQuotaToon(
  * once, in `quota[]` or `attention[]`, and never in metric order. Default
  * TOON omission of not-set-up providers happens before this runs.
  */
-function quotaBlocks(response: QuotaAxiResponse): ProviderBlocks {
+function quotaBlocks(
+  response: QuotaAxiResponse,
+  full: boolean,
+): ProviderBlocks {
   const blocks: ProviderBlocks = { quota: [], exhaustion: [], attention: [] };
   for (const provider of response.providers) {
     const scopes = provider.quotaSemantics?.effectiveAvailability ?? [];
@@ -157,8 +160,27 @@ function quotaBlocks(response: QuotaAxiResponse): ProviderBlocks {
       }
     }
 
+    // An unknown scope already explains why no percentage is published. Carry
+    // the auth fact there instead of adding a generic no_quota row beside it.
+    // A provider error, remedy, status, or credit balance still earns its own row.
+    const scopeCarriesAuth =
+      !measured &&
+      scopeAttention.length > 0 &&
+      !primaryProviderRow(provider) &&
+      !creditBalance(provider) &&
+      !provider.state.error &&
+      !provider.state.remedyCommand;
+    if (scopeCarriesAuth && provider.state.authStatus) {
+      scopeAttention[0].detail += ` (auth ${provider.state.authStatus})`;
+    }
     blocks.attention.push(
-      ...providerAttention(provider, measured, scopeAttention.length),
+      ...providerAttention(
+        provider,
+        measured,
+        scopeAttention.length,
+        scopeCarriesAuth,
+        full,
+      ),
     );
     blocks.attention.push(...shareRows(provider));
     blocks.attention.push(...jobRows(provider));
@@ -214,11 +236,13 @@ function providerAttention(
   provider: ProviderQuota,
   measured: boolean,
   scopeRows: number,
+  scopeCarriesAuth: boolean,
+  full: boolean,
 ): AttentionRow[] {
   // Degraded sources are appended, never counted: they name the provider but
   // not why a scope is missing, so they must not suppress the `no_quota` row.
   return [
-    ...providerStateRows(provider, measured, scopeRows),
+    ...providerStateRows(provider, measured, scopeRows, scopeCarriesAuth, full),
     ...degradedSourceRows(provider),
   ];
 }
@@ -276,6 +300,8 @@ function providerStateRows(
   provider: ProviderQuota,
   measured: boolean,
   scopeRows: number,
+  scopeCarriesAuth: boolean,
+  full: boolean,
 ): AttentionRow[] {
   const rows: AttentionRow[] = [];
   const primary = primaryProviderRow(provider);
@@ -289,7 +315,8 @@ function providerStateRows(
       remedy: NONE,
     });
   }
-  const unresolved = joinIds(provider.quotaSemantics?.unresolvedWindowIds);
+  const unresolvedIds = provider.quotaSemantics?.unresolvedWindowIds ?? [];
+  const unresolved = joinIds(unresolvedIds);
   if (unresolved) {
     rows.push({
       ...providerColumns(provider),
@@ -299,7 +326,15 @@ function providerStateRows(
       remedy: NONE,
     });
   }
-  const untrusted = joinIds(provider.state.untrustedWindowIds);
+  // Compact TOON names a blocking window once. The audit tier and JSON keep
+  // the separate provenance of unresolved and untrusted limits.
+  const untrusted = joinIds(
+    full
+      ? provider.state.untrustedWindowIds
+      : provider.state.untrustedWindowIds?.filter(
+          (id) => !unresolvedIds.includes(id),
+        ),
+  );
   if (untrusted) {
     rows.push({
       ...providerColumns(provider),
@@ -328,6 +363,7 @@ function providerStateRows(
     });
     return rows;
   }
+  if (scopeCarriesAuth) return rows;
   // No status row to carry the auth fact. Emit one when there is an auth
   // status to state, or when nothing else would name this provider at all.
   if (suffix === "" && rows.length + scopeRows > 0) return rows;
