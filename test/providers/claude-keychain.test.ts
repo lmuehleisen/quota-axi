@@ -589,6 +589,7 @@ describe("Claude macOS Keychain discovery", () => {
 
   it.each([
     ["denied", { code: 51 }, "keychain_access_denied"],
+    ["interaction blocked", { code: 36 }, "keychain_access_denied"],
     ["timeout", { killed: true, signal: "SIGTERM" }, "keychain_prompt_timeout"],
     ["unreachable", { code: 44 }, "keychain_unreachable"],
   ])(
