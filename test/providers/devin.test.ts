@@ -269,22 +269,72 @@ describe("Devin credential matrix", () => {
     });
   });
 
-  it("does not bind a daily figure without evidence that the vendor enforces it", () => {
-    const payload = structuredClone(MAX) as {
-      planInfo: Record<string, unknown>;
-    };
+  it("reads an omitted hideDailyQuota as proto3 false through the adapter", async () => {
+    const payload = structuredClone(PRO) as DevinTestPayload;
     delete payload.planInfo.hideDailyQuota;
-    const normalized = normalizeDevinPayload(payload, NOW);
-    expect(normalized.windows.map((window) => window.id)).toEqual(["weekly"]);
-    expect(normalized.untrustedWindowIds).toEqual(["daily"]);
-    expect(interpretNormalized(normalized).quotaSemantics).toMatchObject({
-      status: "partial",
-      unresolvedWindowIds: ["daily"],
+    const report = await testAdapter({
+      fetch: sequentialFetch([jsonResponse(payload)]),
+    }).fetchQuota(OPTIONS);
+    expect(report.windows).toEqual([WEEKLY, DAILY]);
+    expect(report.state.untrustedWindowIds).toBeUndefined();
+    const interpreted = withQuotaSemantics(report, new Date(NOW).toISOString());
+    expect(interpreted.quotaSemantics).toMatchObject({
+      status: "known",
+      effectiveAvailability: [
+        {
+          scope: "included_quota",
+          status: "known",
+          effectivePercentRemaining: 60,
+          boundedBy: ["weekly", "daily"],
+        },
+      ],
     });
-    expect(
-      interpretNormalized(normalized).quotaSemantics?.effectiveAvailability[0]
-        ?.effectivePercentRemaining,
-    ).toBeUndefined();
+    expect(interpreted.quotaSemantics?.unresolvedWindowIds).toBeUndefined();
+  });
+
+  it.each(["missing", "elapsed", "invalid", "zero"])(
+    "keeps an omitted flag's daily quota honest when its figure is %s",
+    (condition) => {
+      const payload = structuredClone(PRO) as DevinTestPayload;
+      delete payload.planInfo.hideDailyQuota;
+      delete payload.userStatus.planStatus.dailyQuotaRemainingPercent;
+      if (condition === "missing")
+        delete payload.userStatus.planStatus.dailyQuotaResetAtUnix;
+      if (condition === "elapsed")
+        payload.userStatus.planStatus.dailyQuotaResetAtUnix = String(
+          NOW / 1000,
+        );
+      if (condition === "invalid")
+        payload.userStatus.planStatus.dailyQuotaRemainingPercent = 101;
+      const normalized = normalizeDevinPayload(payload, NOW);
+      if (condition === "zero") {
+        expect(normalized.windows).toEqual([
+          WEEKLY,
+          { ...DAILY, percentRemaining: 0, percentUsed: 100 },
+        ]);
+        expect(normalized.untrustedWindowIds).toEqual([]);
+        expect(
+          interpretNormalized(normalized).quotaSemantics
+            ?.effectiveAvailability[0],
+        ).toMatchObject({ status: "known", effectivePercentRemaining: 0 });
+      } else {
+        expect(normalized.untrustedWindowIds).toEqual(["daily"]);
+        expect(interpretNormalized(normalized).quotaSemantics).toMatchObject({
+          status: "partial",
+          unresolvedWindowIds: ["daily"],
+        });
+      }
+    },
+  );
+
+  it("uses the vendor flag rather than the tier name to decide daily enforcement", () => {
+    const payload = structuredClone(PRO) as DevinTestPayload;
+    delete payload.planInfo.hideDailyQuota;
+    Object.assign(payload.userStatus, { teamsTier: "max" });
+    expect(normalizeDevinPayload(payload, NOW).windows).toEqual([
+      WEEKLY,
+      DAILY,
+    ]);
   });
 
   it("rejects a hideDailyQuota that is not a boolean", () => {
