@@ -2,7 +2,12 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readCachedProvider, retireCachedSlot } from "../cache.js";
-import { providerFetch } from "../lib/http.js";
+import {
+  providerFetch,
+  providerRequestFailure,
+  readBoundedResponseJson,
+  ProviderRequestError,
+} from "../lib/http.js";
 import { traceInput } from "../lib/input-trace.js";
 import { execFileText, commandExists } from "../lib/process.js";
 import {
@@ -411,7 +416,7 @@ async function fetchCursorUsage(credentials: CursorCredentials): Promise<{
     sandResult.status === "fulfilled" ? sandResult.value : undefined,
   );
   if (!quota) {
-    throw new Error("Cursor quota unavailable");
+    throw new CursorQuotaError("Cursor quota unavailable");
   }
   return quota;
 }
@@ -438,7 +443,15 @@ async function postDashboardRpc(
       },
     );
     rejectUnusableUsageResponse(response);
-    return response.json();
+    return await readBoundedResponseJson(response, controller.signal);
+  } catch (error) {
+    if (
+      error instanceof CursorAuthError ||
+      error instanceof RateLimitError ||
+      error instanceof CursorQuotaError
+    )
+      throw error;
+    throw providerRequestFailure(error, controller.signal);
   } finally {
     clearTimeout(timer);
   }
@@ -454,7 +467,7 @@ function rejectUnusableUsageResponse(response: Response): void {
     );
   }
   if (!response.ok)
-    throw new Error(`Cursor quota unavailable (${response.status})`);
+    throw new CursorQuotaError(`Cursor quota unavailable (${response.status})`);
 }
 
 async function readCredentialState(): Promise<CredentialState> {
@@ -708,7 +721,14 @@ function cursorFinalError(
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.name === "AbortError")
     return "Cursor quota request timed out";
-  return error instanceof Error ? error.message : "Cursor quota unavailable";
+  if (error instanceof ProviderRequestError) return error.code;
+  if (
+    error instanceof CursorAuthError ||
+    error instanceof RateLimitError ||
+    error instanceof CursorQuotaError
+  )
+    return error.message;
+  return providerRequestFailure(error).code;
 }
 
 function cursorSuccess(
@@ -728,6 +748,8 @@ function cursorSuccess(
     attempts,
   });
 }
+
+class CursorQuotaError extends Error {}
 
 class CursorAuthError extends Error {
   constructor() {

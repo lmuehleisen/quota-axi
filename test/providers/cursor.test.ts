@@ -45,8 +45,8 @@ describe("Cursor quota parsing", () => {
         id: "included_usage",
         label: "included usage",
         kind: "monthly",
-        percentUsed: 43,
-        percentRemaining: 57,
+        percentUsed: 42.5,
+        percentRemaining: 57.5,
         resetsAt: "2026-07-03T00:00:00.000Z",
       },
       {
@@ -181,21 +181,21 @@ describe("Cursor Grok Bot weekly usage", () => {
       {
         id: "included_usage",
         kind: "monthly",
-        percentUsed: 15,
+        percentUsed: 15.2,
         startsAt: "2026-07-19T21:37:33.000Z",
       },
       {
         id: "auto_usage",
         kind: "monthly",
-        percentUsed: 14,
+        percentUsed: 13.9,
         startsAt: "2026-07-19T21:37:33.000Z",
       },
       {
         id: "grok_bot",
         label: "Grok Bot",
         kind: "weekly",
-        percentUsed: 38,
-        percentRemaining: 62,
+        percentUsed: 38.059383,
+        percentRemaining: 61.940617,
         startsAt: "2026-08-19T21:37:33.239Z",
         resetsAt: "2026-08-26T21:37:33.239Z",
       },
@@ -218,7 +218,7 @@ describe("Cursor Grok Bot weekly usage", () => {
     expect(result?.windows).toContainEqual(
       expect.objectContaining({
         id: "grok_bot",
-        percentUsed: 12,
+        percentUsed: 12.4,
         startsAt: "2026-08-19T21:37:33.239Z",
         resetsAt: "2026-08-26T21:37:33.239Z",
       }),

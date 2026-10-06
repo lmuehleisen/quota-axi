@@ -468,24 +468,24 @@ describe("Claude credential-state reporting", () => {
       new TypeError(
         "fetch failed to https://api/CLAUDE-SENTINEL-DO-NOT-LEAK-110008",
       ),
-      "fetch failed to https://api/[redacted]",
+      "provider_request_failed",
     ],
     [
       "response shape failure",
       new Error("Unexpected token < in JSON at position 0"),
-      "Unexpected token < in JSON at position 0",
+      "provider_request_failed",
     ],
     [
       "timeout",
       Object.assign(new Error("CLAUDE-SENTINEL-DO-NOT-LEAK-110009"), {
         name: "AbortError",
       }),
-      "Claude quota request timed out",
+      "provider_timeout",
     ],
     [
       "non-error throw",
       "CLAUDE-SENTINEL-DO-NOT-LEAK-110008",
-      "Claude quota unavailable",
+      "provider_request_failed",
     ],
   ])(
     "reports a profile-only %s with the credential redacted",
@@ -2220,13 +2220,13 @@ describe("Claude credential-state reporting", () => {
     expect(result.state).toMatchObject({
       status: "error",
       stale: false,
-      error: "network unavailable",
+      error: "provider_request_failed",
     });
     expect(result.attempts).toEqual([
       {
         source: "keychain",
         status: "failed",
-        error: "network unavailable",
+        error: "provider_request_failed",
       },
     ]);
     expect(bearers).toEqual(["Bearer transient-keychain-token"]);
@@ -2295,7 +2295,11 @@ describe("Claude credential-state reporting", () => {
     expect(result).toMatchObject({
       source: "unavailable",
       windows: [],
-      state: { status: "error", stale: false, error: "network unavailable" },
+      state: {
+        status: "error",
+        stale: false,
+        error: "provider_request_failed",
+      },
     });
   });
 
@@ -2329,7 +2333,7 @@ describe("Claude credential-state reporting", () => {
     expect(result).toMatchObject({
       source: "unavailable",
       windows: [],
-      state: { stale: false, error: "network unavailable" },
+      state: { stale: false, error: "provider_request_failed" },
     });
     expect(readCachedProvider("claude")?.windows[0]?.percentUsed).toBe(42);
   });
@@ -2368,7 +2372,7 @@ describe("Claude credential-state reporting", () => {
     expect(result).toMatchObject({
       source: "unavailable",
       windows: [],
-      state: { stale: false, error: "network unavailable" },
+      state: { stale: false, error: "provider_request_failed" },
     });
     expect(readCachedProvider("claude")?.windows[0]?.percentUsed).toBe(42);
   });
@@ -2405,7 +2409,11 @@ describe("Claude credential-state reporting", () => {
     expect(result).toMatchObject({
       source: "unavailable",
       windows: [],
-      state: { status: "error", stale: false, error: "network unavailable" },
+      state: {
+        status: "error",
+        stale: false,
+        error: "provider_request_failed",
+      },
     });
   });
 
@@ -2482,7 +2490,11 @@ describe("Claude credential-state reporting", () => {
     expect(result).toMatchObject({
       source: "unavailable",
       windows: [],
-      state: { status: "error", stale: false, error: "network unavailable" },
+      state: {
+        status: "error",
+        stale: false,
+        error: "provider_request_failed",
+      },
     });
   });
 

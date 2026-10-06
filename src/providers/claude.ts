@@ -9,7 +9,11 @@ import {
   readJsonFileResult,
   type JsonFileReadResult,
 } from "../lib/fs.js";
-import { providerFetch } from "../lib/http.js";
+import {
+  providerFetch,
+  providerRequestFailure,
+  readBoundedResponseJson,
+} from "../lib/http.js";
 import {
   CLAUDE_KEYCHAIN_SERVICE,
   CLAUDE_OAUTH_TOKEN_ENV,
@@ -382,7 +386,7 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
       attempts,
     });
   } catch (error) {
-    const failure = profileOnlyClaudeFailureFor(
+    const failure = credentialSafeClaudeFailureFor(
       error,
       state.credentials.accessToken,
     );
@@ -395,19 +399,18 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
   }
 }
 
-/**
- * Keep the real cause of a profile-only failure - a refused connection, a
- * malformed response - so a single-account probe stays diagnosable, with the
- * probed bearer stripped out of it.
- */
-function profileOnlyClaudeFailureFor(
+/** Apply the same safe failure policy to every credential source. */
+function credentialSafeClaudeFailureFor(
   error: unknown,
   accessToken: string,
 ): ClaudeFailure {
-  if (error instanceof ClaudeFailure) return error;
-  return new ClaudeFailure(redactSecret(errorMessage(error), accessToken), {
-    status: "error",
-  });
+  const failure = claudeFailureFor(error);
+  const safe = new ClaudeFailure(
+    redactSecret(failure.code, accessToken),
+    failure,
+  );
+  safe.usageFetchFailure = failure.usageFetchFailure;
+  return safe;
 }
 
 function profileOnlyCredentialFile(): string | undefined {
@@ -654,7 +657,10 @@ async function attemptClaudeQuota(
           }),
         };
       } catch (error) {
-        let failure = claudeFailureFor(error);
+        let failure = credentialSafeClaudeFailureFor(
+          error,
+          credential.accessToken,
+        );
         const softRefreshable =
           failure.definitiveAuth &&
           state.status === "expired" &&
@@ -1600,16 +1606,27 @@ async function fetchOauthUsage(credentials: ClaudeCredentials): Promise<{
     });
     await rejectUnusableUsageResponse(response, credentials.source === "env");
     const quota = normalizeClaudeApiUsage(
-      await response.json(),
+      await readBoundedResponseJson(response, controller.signal),
       credentials.plan,
     );
-    if (!quota) throw new Error("Claude quota unavailable");
+    if (!quota)
+      throw new ClaudeFailure("Claude quota unavailable", {
+        staleEligible: true,
+      });
     const identity = await fetchOauthProfile(credentials);
     return {
       ...quota,
       account: identity.account,
       identityError: identity.error,
     };
+  } catch (error) {
+    if (error instanceof ClaudeFailure) throw error;
+    throw new ClaudeFailure(
+      providerRequestFailure(error, controller.signal).code,
+      {
+        staleEligible: true,
+      },
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -1636,15 +1653,15 @@ async function fetchOauthProfile(
         `identity_profile_http_${response.status}`,
       );
     }
-    const account = normalizeClaudeProfile(await response.json());
+    const account = normalizeClaudeProfile(
+      await readBoundedResponseJson(response, controller.signal),
+    );
     return account
       ? { account }
       : unverifiedClaudeIdentity("identity_profile_unrecognized");
   } catch (error) {
     return unverifiedClaudeIdentity(
-      error instanceof Error && error.name === "AbortError"
-        ? "identity_profile_timeout"
-        : "identity_profile_unavailable",
+      `identity_profile_${providerRequestFailure(error, controller.signal).code}`,
     );
   } finally {
     clearTimeout(timer);
@@ -1873,9 +1890,7 @@ function expiresAtMillis(value: unknown): number | undefined {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.name === "AbortError")
-    return "Claude quota request timed out";
-  return error instanceof Error ? error.message : "Claude quota unavailable";
+  return providerRequestFailure(error).code;
 }
 
 class ClaudeFailure extends Error {

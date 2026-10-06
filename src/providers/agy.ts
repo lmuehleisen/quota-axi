@@ -9,12 +9,7 @@ import {
   execFileText,
   type ExecFileTextOptions,
 } from "../lib/process.js";
-import {
-  clampPercent,
-  nowIso,
-  parseEpochOrIso,
-  percentRemaining,
-} from "../lib/time.js";
+import { clampPercent, nowIso, parseEpochOrIso } from "../lib/time.js";
 import type {
   AuthProviderReport,
   ProviderAdapter,
@@ -720,13 +715,10 @@ function normalizeQuotaSummaryBucket(
     result.windowSeconds = windowKind.windowSeconds;
   }
   const remaining = remainingFraction(bucket);
-  if (remaining !== undefined) {
-    const percentUsed = clampPercent((1 - clampFraction(remaining)) * 100);
-    result.percentUsed = percentUsed;
-    result.percentRemaining = percentRemaining(percentUsed);
+  if (remaining !== undefined && remaining >= 0 && remaining <= 1) {
+    result.percentRemaining = remaining * 100;
+    result.percentUsed = clampPercent(100 - result.percentRemaining);
   }
-  if (result.percentUsed === undefined && !result.resetsAt && !result.resetText)
-    return undefined;
   return result;
 }
 
@@ -758,14 +750,11 @@ function normalizeModelConfigWindow(raw: unknown): QuotaWindow | undefined {
       parseEpochOrIso(quotaInfo.resetTime) ??
       parseEpochOrIso(quotaInfo.reset_time),
   };
-  if (remaining !== undefined) {
-    const percentUsed = clampPercent((1 - clampFraction(remaining)) * 100);
-    result.percentUsed = percentUsed;
-    result.percentRemaining = percentRemaining(percentUsed);
+  if (remaining !== undefined && remaining >= 0 && remaining <= 1) {
+    result.percentRemaining = remaining * 100;
+    result.percentUsed = clampPercent(100 - result.percentRemaining);
   }
-  return result.percentUsed === undefined && !result.resetsAt
-    ? undefined
-    : result;
+  return result;
 }
 
 function quotaSummaryPayload(
@@ -1094,11 +1083,6 @@ function requestBodyForPath(path: string): Record<string, unknown> {
       locale: "en",
     },
   };
-}
-
-function clampFraction(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

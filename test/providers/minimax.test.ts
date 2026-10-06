@@ -75,7 +75,7 @@ describe("MiniMax provider", () => {
       expect.objectContaining({
         id: "model:minimax-m2.7-highspeed:7d",
         kind: "model",
-        percentRemaining: 67,
+        percentRemaining: 66.6667,
       }),
     ]);
     const interpreted = withQuotaSemantics(report, "2026-09-01T00:00:00.000Z");

@@ -821,14 +821,14 @@ describe("Codex credential-state reporting", () => {
 
     expect(result.source).toBe("pi:openai-codex");
     expect(result.state.status).toBe("error");
-    expect(result.state.error).toBe("network unavailable");
+    expect(result.state.error).toBe("provider_request_failed");
     expect(result.state.status).not.toBe("auth_required");
     expect(result.attempts).toEqual([
       { source: "oauth", status: "failed", error: "Codex sign-in required" },
       {
         source: "pi:openai-codex",
         status: "failed",
-        error: "network unavailable",
+        error: "provider_request_failed",
       },
     ]);
     expect(spawn).not.toHaveBeenCalled();
@@ -895,14 +895,14 @@ describe("Codex credential-state reporting", () => {
     // The native credential was never rejected - the network was. Advising a
     // sign-in here sends the reader to fix a credential that is fine.
     expect(result.state.status).toBe("error");
-    expect(result.state.error).toBe("Codex quota request timed out");
+    expect(result.state.error).toBe("provider_timeout");
     expect(result.state.status).not.toBe("auth_required");
     expect(result.source).toBe("oauth");
     expect(result.attempts).toEqual([
       {
         source: "oauth",
         status: "failed",
-        error: "Codex quota request timed out",
+        error: "provider_timeout",
       },
     ]);
   });
@@ -913,7 +913,7 @@ describe("Codex credential-state reporting", () => {
       secondEndpoint: async () => {
         throw new TypeError("network unavailable");
       },
-      expectedError: "network unavailable",
+      expectedError: "provider_request_failed",
     },
     {
       failure: "a server error",
@@ -999,9 +999,9 @@ describe("Codex credential-state reporting", () => {
 
     expect(result.source).toBe("oauth");
     expect(result.state.status).toBe("error");
-    expect(result.state.error).toBe("network unavailable");
+    expect(result.state.error).toBe("provider_request_failed");
     expect(result.attempts).toEqual([
-      { source: "oauth", status: "failed", error: "network unavailable" },
+      { source: "oauth", status: "failed", error: "provider_request_failed" },
     ]);
     expect(bearers).toEqual([`Bearer ${nativeToken}`, `Bearer ${nativeToken}`]);
     expect(bearers).not.toContain(`Bearer ${piToken}`);
@@ -1334,7 +1334,7 @@ describe("Codex credential-state reporting", () => {
 
     expect(rendered).not.toContain(accessToken);
     expect(rendered).not.toContain(refreshToken);
-    expect(rendered).toContain("[redacted]");
+    expect(rendered).toContain("provider_request_failed");
   });
 
   describe("profile-only credential mode", () => {
