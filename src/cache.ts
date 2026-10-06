@@ -13,6 +13,7 @@ import { devinReadingContextId } from "./providers/devin-cache-context.js";
 import { elevenLabsReadingContextId } from "./providers/elevenlabs-cache-context.js";
 import { miniMaxReadingContextId } from "./providers/minimax-cache-context.js";
 import { museReadingContextId } from "./providers/muse-cache-context.js";
+import { kiroReadingContextId } from "./providers/kiro-cache-context.js";
 import { isPiCodexSource } from "./providers/pi-codex-credential.js";
 import { fetchLockPath, withLockSync } from "./lib/fetch-lock.js";
 import { inputsDigest, type TracedInputs } from "./lib/input-trace.js";
@@ -111,6 +112,7 @@ const CONTEXT_SCOPED_PROVIDERS: Partial<
   codex: codexStampContextId,
   minimax: miniMaxReadingContextId,
   muse: museReadingContextId,
+  kiro: kiroReadingContextId,
 };
 
 /**

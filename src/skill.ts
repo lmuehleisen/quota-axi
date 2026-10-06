@@ -36,6 +36,7 @@ export const HERMES_TAGS = [
   "devin",
   "muse",
   "higgsfield",
+  "kiro",
   "cli",
 ];
 export const HERMES_CATEGORY = "observability";

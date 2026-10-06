@@ -29,6 +29,7 @@ metadata:
       - devin
       - muse
       - higgsfield
+      - kiro
       - cli
     category: observability
 ---

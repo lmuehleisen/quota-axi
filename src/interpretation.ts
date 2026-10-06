@@ -196,6 +196,17 @@ function semanticsFor(
       );
     case "higgsfield":
       return higgsfieldSemantics(provider.windows, generatedAt);
+    case "kiro":
+      return knownSemantics(
+        provider.windows.map((window) =>
+          availability(
+            window.kind === "monthly" ? `included:${window.id}` : window.id,
+            [window],
+            generatedAt,
+          ),
+        ),
+        "Kiro reports separate monthly, trial, bonus, and add-on allowances. Each scope measures only its named pool; exhausting included credits does not establish account exhaustion. Pool windows are never summed or treated as joint bounds.",
+      );
   }
 }
 
