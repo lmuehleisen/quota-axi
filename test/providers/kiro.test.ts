@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { kiroAdapter, normalizeKiroQuota } from "../../src/providers/kiro.js";
 import {
@@ -42,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
   process.env.KIRO_CLI_DATABASE = originalDatabase;
   process.env.XDG_CACHE_HOME = originalCache;
@@ -55,6 +57,7 @@ function credential(overrides: Record<string, unknown> = {}) {
     key: "kirocli:social:token",
     access: "synthetic-access",
     present: 1,
+    accessValid: 1,
     expiry: "2026-02-16T00:00:00Z",
     refreshable: 1,
     profile: "arn:aws:kiro:us-east-1:000000000000:profile/example",
@@ -283,6 +286,60 @@ describe("Kiro quota", () => {
     },
   );
 
+  it("preserves the native source before an environment key despite advisory expiry", async () => {
+    process.env.KIRO_API_KEY = "synthetic-api-key";
+    sql.mockResolvedValue(
+      JSON.stringify([credential({ expiry: "2026-02-01T00:00:00Z" })]),
+    );
+    const result = await kiroAdapter.fetchQuota(options);
+    expect(result.state.authStatus).toBe("usable");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+      "Bearer synthetic-access",
+    );
+    expect(result.attempts).toContainEqual({
+      source: "env:KIRO_API_KEY",
+      status: "skipped",
+      credentialPresent: true,
+    });
+  });
+
+  it("hands over from an expired source only after definitive rejection", async () => {
+    process.env.KIRO_API_KEY = "synthetic-api-key";
+    sql.mockResolvedValue(
+      JSON.stringify([credential({ expiry: "2026-02-01T00:00:00Z" })]),
+    );
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 401 }));
+    expect((await kiroAdapter.fetchQuota(options)).state.authStatus).toBe(
+      "usable",
+    );
+    expect(
+      fetchMock.mock.calls.map(([, init]) => init.headers.Authorization),
+    ).toEqual(["Bearer synthetic-access", "Bearer synthetic-api-key"]);
+  });
+
+  it("does not attach expired-auth metadata to a transient failure with an expired sibling", async () => {
+    sql.mockResolvedValue(
+      JSON.stringify([
+        credential(),
+        credential({
+          key: "kirocli:odic:token",
+          expiry: "2026-02-01T00:00:00Z",
+        }),
+      ]),
+    );
+    fetchMock.mockResolvedValue(new Response("", { status: 500 }));
+    const result = await kiroAdapter.fetchQuota(options);
+    expect(result.state).toMatchObject({
+      status: "unavailable",
+      error: "kiro_usage_unavailable",
+    });
+    expect(result.state.authStatus).not.toBe("expired_refreshable");
+    expect(result.state.reason).not.toBe("credentials_expired");
+    expect(result.state.remedyCommand).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("stops on transport or malformed-response failure", async () => {
     process.env.KIRO_API_KEY = "synthetic-api-key";
     fetchMock.mockRejectedValue(new Error("synthetic-access"));
@@ -346,11 +403,104 @@ describe("Kiro quota", () => {
     const auth = await kiroAdapter.inspectAuth(options);
     expect(auth.sources[0].status).toBe("available");
     expect(sql.mock.calls[0][1][3]).toContain("NULL AS access");
+    expect(sql.mock.calls[0][1][3]).toContain("AS accessValid");
     expect(sql.mock.calls[0][1][3]).not.toContain(
-      "json_extract(value, '$.access_token')",
+      "json_extract(value, '$.access_token') AS access",
     );
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.stringify(auth)).not.toContain("synthetic-access");
+  });
+
+  it("projects literal validity in SQLite without returning access material", async () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      database.exec("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)");
+      const store = database.prepare(
+        "INSERT OR REPLACE INTO auth_kv VALUES (?, ?)",
+      );
+      sql.mockImplementation(async (_command, args) =>
+        JSON.stringify(database.prepare(args[3]).all()),
+      );
+      const whitespace = [
+        9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197,
+        8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288, 65279,
+      ];
+      const values: unknown[] = [
+        "synthetic-access",
+        "!command",
+        "${KEY}",
+        "prefix$KEY",
+        "",
+        null,
+        123,
+        ...Array.from(
+          { length: 33 },
+          (_, i) => `synthetic${String.fromCharCode(i)}access`,
+        ),
+        "synthetic\x7faccess",
+        ...whitespace.map((code) => String.fromCharCode(code)),
+        "\u00a0synthetic-access", // Non-ASCII whitespace inside a nonblank literal is preserved.
+      ];
+      for (const access of values) {
+        store.run(
+          "kirocli:social:token",
+          JSON.stringify({ access_token: access }),
+        );
+        const normal = await readKiroCredentials();
+        const metadata = await readKiroCredentials(true);
+        expect(metadata.sources[0].status).toBe(normal.sources[0].status);
+        expect(metadata.candidates).toEqual([]);
+        const projected = database
+          .prepare(sql.mock.calls.at(-1)![1][3])
+          .all()[0];
+        expect(projected.access).toBeNull();
+        expect(JSON.stringify(metadata)).not.toContain("synthetic-access");
+      }
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps auth metadata validation consistent without selecting access material", async () => {
+    for (const overrides of [
+      { access: null, accessValid: 0 },
+      { access: null, accessValid: 1, region: "example.com" },
+      {
+        access: null,
+        accessValid: 1,
+        profile: "arn:aws:kiro:unsupported:000000000000:profile/example",
+      },
+    ]) {
+      sql.mockResolvedValue(JSON.stringify([credential(overrides)]));
+      const auth = await kiroAdapter.inspectAuth(options);
+      expect(auth.sources[0].status).toBe("invalid");
+    }
+    sql.mockResolvedValue(
+      JSON.stringify([
+        credential({
+          access: null,
+          region: undefined,
+          profile: "arn:aws:kiro:eu-central-1:000000000000:profile/example",
+        }),
+      ]),
+    );
+    expect((await kiroAdapter.inspectAuth(options)).sources[0].status).toBe(
+      "available",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("discovers the native Windows store and retains explicit override precedence", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.stubEnv("LOCALAPPDATA", join(directory, "local-app-data"));
+    expect(kiroDatabasePath()).toBe(process.env.KIRO_CLI_DATABASE);
+    delete process.env.KIRO_CLI_DATABASE;
+    process.env.KIRO_DATA_DIR = directory;
+    expect(kiroDatabasePath()).toBe(join(directory, "data.sqlite3"));
+    delete process.env.KIRO_DATA_DIR;
+    expect(kiroDatabasePath()).toBe(
+      join(directory, "local-app-data", "kiro-cli", "data.sqlite3"),
+    );
   });
 
   it("distinguishes missing sqlite and broken credential stores from sign-out", async () => {

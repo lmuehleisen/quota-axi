@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { traceInput } from "../lib/input-trace.js";
 import { execFileText } from "../lib/process.js";
+import { usableLiteralSecret } from "../lib/secret.js";
 import type { AuthSourceReport } from "../types.js";
 import type { CredentialCandidate } from "./credential-selection.js";
 
@@ -26,6 +27,12 @@ export function kiroDatabasePath(): string {
   if (process.env.KIRO_CLI_DATABASE) return process.env.KIRO_CLI_DATABASE;
   if (process.env.KIRO_DATA_DIR)
     return join(process.env.KIRO_DATA_DIR, "data.sqlite3");
+  if (process.platform === "win32")
+    return join(
+      process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"),
+      "kiro-cli",
+      "data.sqlite3",
+    );
   return process.platform === "darwin"
     ? join(
         homedir(),
@@ -75,6 +82,15 @@ export async function readKiroCredentials(
       const query = `SELECT key,
         ${presenceOnly ? "NULL" : "json_extract(value, '$.access_token')"} AS access,
         json_type(value, '$.access_token') IS NOT NULL AS present,
+        json_type(value, '$.access_token') = 'text'
+          AND length(trim(json_extract(value, '$.access_token'),
+            char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))) > 0
+          AND instr(json_extract(value, '$.access_token'), '$') = 0
+          AND substr(json_extract(value, '$.access_token'), 1, 1) != '!'
+          AND instr(json_extract(value, '$.access_token'), char(0)) = 0
+          AND json_extract(value, '$.access_token') NOT GLOB
+            '*[' || char(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,127) || ']*'
+          AS accessValid,
         json_extract(value, '$.expires_at') AS expiry,
         json_type(value, '$.refresh_token') IS NOT NULL AS refreshable,
         json_extract(value, '$.profile_arn') AS profile,
@@ -96,42 +112,41 @@ export async function readKiroCredentials(
           typeof data.expiry === "string" ? Date.parse(data.expiry) : NaN;
         const expired = Number.isFinite(expiry) && expiry <= Date.now();
         const access = literal(data.access);
-        if ((presenceOnly && data.present === 1) || access) {
+        const profile = literal(data.profile);
+        // The profile's region is authoritative when the store omits it.
+        const region =
+          literal(data.region) ?? profile?.split(":")[3] ?? "us-east-1";
+        if (presenceOnly ? data.accessValid === 1 : access) {
+          if (
+            ![
+              "us-east-1",
+              "eu-central-1",
+              "us-gov-east-1",
+              "us-gov-west-1",
+            ].includes(region)
+          ) {
+            sources.push({
+              source,
+              path,
+              status: "invalid",
+              error: "kiro_region_unsupported",
+              credentialPresent: true,
+            });
+            continue;
+          }
           sources.push({
             source,
             path,
             status: expired ? "expired" : "available",
             credentialPresent: true,
           });
-          if (access) {
-            const profile = literal(data.profile);
-            // The profile's region is authoritative when the store omits it.
-            const region =
-              literal(data.region) ?? profile?.split(":")[3] ?? "us-east-1";
-            if (
-              ![
-                "us-east-1",
-                "eu-central-1",
-                "us-gov-east-1",
-                "us-gov-west-1",
-              ].includes(region)
-            ) {
-              sources[sources.length - 1] = {
-                source,
-                path,
-                status: "invalid",
-                error: "kiro_region_unsupported",
-                credentialPresent: true,
-              };
-              continue;
-            }
+          if (!presenceOnly && access)
             candidates.push({
               source,
               localState: expired ? "expired" : "valid",
               refreshable: data.refreshable === 1,
               credential: { access, profile, region },
             });
-          }
         } else {
           sources.push({
             source,
@@ -193,14 +208,6 @@ function object(value: unknown): Record<string, unknown> | undefined {
 }
 
 function literal(value: unknown): string | undefined {
-  return typeof value === "string" &&
-    value.trim() &&
-    !value.includes("$") &&
-    !value.startsWith("!") &&
-    ![...value].some(
-      (character) =>
-        character.charCodeAt(0) <= 0x20 || character.charCodeAt(0) === 0x7f,
-    )
-    ? value
-    : undefined;
+  const secret = usableLiteralSecret(value);
+  return secret && !secret.includes(" ") ? secret : undefined;
 }

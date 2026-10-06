@@ -11,6 +11,7 @@ import {
   selectCredential,
   type AttemptOutcome,
   type CredentialCandidate,
+  type CredentialSelection,
 } from "./credential-selection.js";
 import { readKiroCredentials, type KiroCredential } from "./kiro-credential.js";
 import { stampKiroContext } from "./kiro-cache-context.js";
@@ -24,7 +25,27 @@ export const kiroAdapter: ProviderAdapter = {
   }),
   fetchQuota: async () => {
     const { candidates, sources } = await readKiroCredentials();
-    const selection = await selectCredential(candidates, attempt);
+    let selection: CredentialSelection<ProviderQuota> = await selectCredential(
+      [],
+      attempt,
+    );
+    // Preserve source ownership order even when a store's expiry is advisory.
+    for (const candidate of candidates) {
+      const next = await selectCredential([candidate], attempt);
+      selection = {
+        ...next,
+        refreshable: selection.refreshable || next.refreshable,
+        results: [...selection.results, ...next.results],
+      };
+      if (next.outcome !== "all_rejected") break;
+    }
+    for (const candidate of candidates.slice(selection.results.length))
+      selection.results.push({
+        source: candidate.source,
+        localState: candidate.localState,
+        refreshable: candidate.refreshable,
+        outcome: "not_tried",
+      });
     const attempts: SourceAttempt[] = sources.map((source) => {
       const result = selection.results.find(
         (candidate) => candidate.source === source.source,
@@ -53,6 +74,7 @@ export const kiroAdapter: ProviderAdapter = {
       ["error", "invalid", "unsupported"].includes(status),
     );
     const expired =
+      selection.outcome !== "transient" &&
       selection.refreshable &&
       selection.results.some((result) => result.localState === "expired");
     const error =
