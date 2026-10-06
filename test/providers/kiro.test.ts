@@ -361,6 +361,54 @@ describe("Kiro quota", () => {
     );
   });
 
+  it.each([401, 403])(
+    "does not prescribe CLI login for an environment-only HTTP %i rejection",
+    async (status) => {
+      process.env.KIRO_CLI_DATABASE = join(directory, "absent");
+      process.env.KIRO_API_KEY = "synthetic-api-key";
+      fetchMock.mockResolvedValue(
+        Response.json(
+          { message: "The bearer token included in the request is invalid." },
+          { status },
+        ),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      expect(report.state.status).toBe("auth_required");
+      expect(report.state.remedyCommand).toBeUndefined();
+      expect(report.attempts).toContainEqual({
+        source: "env:KIRO_API_KEY",
+        status: "failed",
+        credentialPresent: true,
+        error:
+          status === 401
+            ? "kiro_auth_rejected"
+            : "kiro_auth_rejected_invalid_token",
+      });
+      expect(
+        renderQuotaToon(responseFor(report), "quota-axi", true),
+      ).not.toContain("kiro-cli login");
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(sql).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([401, 403])(
+    "keeps the native login remedy when native and environment sources reject HTTP %i",
+    async (status) => {
+      process.env.KIRO_API_KEY = "synthetic-api-key";
+      fetchMock.mockImplementation(async () =>
+        Response.json(
+          { message: "The bearer token included in the request is invalid." },
+          { status },
+        ),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      expect(report.state.status).toBe("auth_required");
+      expect(report.state.remedyCommand).toBe("kiro-cli login");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it.each([
     "UNAUTHORIZED_CUSTOMIZATION_RESOURCE_ACCESS",
     "UNAUTHORIZED_WORKSPACE_CONTEXT_FEATURE_ACCESS",

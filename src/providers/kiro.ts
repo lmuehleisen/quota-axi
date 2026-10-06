@@ -109,9 +109,15 @@ export const kiroAdapter: ProviderAdapter = {
       Object.assign(report.state, {
         authStatus: "expired_refreshable",
         reason: "credentials_expired",
-        remedyCommand: "kiro-cli login",
       });
-    else if (selection.outcome === "all_rejected")
+    if (
+      selection.outcome === "all_rejected" &&
+      selection.results.some(
+        (result) =>
+          result.outcome === "rejected" &&
+          result.source.startsWith("kiro-cli-"),
+      )
+    )
       report.state.remedyCommand = "kiro-cli login";
     return report;
   },
