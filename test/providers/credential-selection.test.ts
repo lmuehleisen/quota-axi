@@ -223,6 +223,46 @@ describe("shared credential selection", () => {
     expect(selection.transientError).toBe("credential_attempt_failed");
   });
 
+  it("stops on a policy denial without switching or classifying expired auth", async () => {
+    const attempt = vi.fn(
+      outcomes({
+        primary: { kind: "forbidden", error: "policy_access_denied" },
+        secondary: { kind: "quota", result: "fresh-data" },
+      }),
+    );
+    const selection = await selectCredential(
+      [
+        candidate("primary", "expired", "expired-token-fixture", true),
+        candidate("secondary", "expired", "other-token-fixture", true),
+      ],
+      attempt,
+    );
+    expect(attempt).toHaveBeenCalledOnce();
+    expect(selection.outcome).toBe("forbidden");
+    expect(selection.forbiddenError).toBe("policy_access_denied");
+    expect(selection.transientError).toBeUndefined();
+    // The untried sibling's refresh-path metadata survives independently of
+    // the forbidden verdict; it must not become an expired-auth verdict.
+    expect(selection.refreshable).toBe(true);
+    expect(selection.results[1].outcome).toBe("not_tried");
+  });
+
+  it("preserves an established live floor when a later source is forbidden", async () => {
+    const selection = await selectCredential(
+      [
+        candidate("model-auth", "valid", "model-token-fixture"),
+        candidate("session", "valid", "session-token-fixture"),
+      ],
+      outcomes({
+        "model-auth": { kind: "live_no_quota" },
+        session: { kind: "forbidden", error: "policy_access_denied" },
+      }),
+    );
+    expect(selection.outcome).toBe("live_no_quota");
+    expect(selection.winner?.source).toBe("model-auth");
+    expect(selection.forbiddenError).toBe("policy_access_denied");
+  });
+
   it("reports no candidates when nothing is try-able", async () => {
     const attempt = vi.fn();
     const selection = await selectCredential([], attempt);

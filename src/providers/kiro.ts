@@ -74,11 +74,14 @@ export const kiroAdapter: ProviderAdapter = {
       ["error", "invalid", "unsupported"].includes(status),
     );
     const expired =
-      selection.outcome !== "transient" &&
+      selection.outcome === "all_rejected" &&
       selection.refreshable &&
       selection.results.some((result) => result.localState === "expired");
     const error =
-      selection.transientError ??
+      selection.forbiddenError ??
+      (selection.transientError === "kiro_usage_forbidden_unknown"
+        ? "kiro_usage_forbidden"
+        : selection.transientError) ??
       (expired
         ? "kiro_credentials_expired"
         : (operational?.error ?? "kiro_auth_required"));
@@ -86,15 +89,17 @@ export const kiroAdapter: ProviderAdapter = {
       provider: "kiro",
       label: "Kiro",
       status:
-        selection.outcome === "transient"
-          ? error === "kiro_rate_limited"
-            ? "rate_limited"
-            : "unavailable"
-          : expired
-            ? "unavailable"
-            : operational
-              ? "error"
-              : "auth_required",
+        selection.outcome === "forbidden"
+          ? "error"
+          : selection.outcome === "transient"
+            ? error === "kiro_rate_limited"
+              ? "rate_limited"
+              : "unavailable"
+            : expired
+              ? "unavailable"
+              : operational
+                ? "error"
+                : "auth_required",
       error,
       attempts,
       sourcesTried: sourceNames(attempts),
@@ -104,8 +109,16 @@ export const kiroAdapter: ProviderAdapter = {
       Object.assign(report.state, {
         authStatus: "expired_refreshable",
         reason: "credentials_expired",
-        remedyCommand: "kiro-cli login",
       });
+    if (
+      selection.outcome === "all_rejected" &&
+      selection.results.some(
+        (result) =>
+          result.outcome === "rejected" &&
+          result.source.startsWith("kiro-cli-"),
+      )
+    )
+      report.state.remedyCommand = "kiro-cli login";
     return report;
   },
 };
@@ -127,16 +140,24 @@ async function attempt(
     });
     if (response.status === 401)
       return { kind: "rejected", error: "kiro_auth_rejected" };
-    // 403 can mean an admin-managed plan does not expose usage, not sign-out.
+    if (response.status === 403) {
+      const category = await classifyKiroForbidden(response, signal);
+      if (category === "invalid_token")
+        return { kind: "rejected", error: "kiro_auth_rejected_invalid_token" };
+      if (category === "policy_access_denied")
+        return {
+          kind: "forbidden",
+          error: "kiro_usage_policy_access_denied_contact_administrator",
+        };
+      return { kind: "transient", error: "kiro_usage_forbidden_unknown" };
+    }
     if (!response.ok)
       return {
         kind: "transient",
         error:
           response.status === 429
             ? "kiro_rate_limited"
-            : response.status === 403
-              ? "kiro_usage_forbidden"
-              : "kiro_usage_unavailable",
+            : "kiro_usage_unavailable",
       };
     const bytes = await readBoundedResponseBody(
       response,
@@ -160,6 +181,54 @@ async function attempt(
   } catch {
     return { kind: "transient", error: "kiro_usage_unavailable" };
   }
+}
+
+type KiroForbiddenCategory =
+  | "invalid_token"
+  | "policy_access_denied"
+  | "unknown";
+
+async function classifyKiroForbidden(
+  response: Response,
+  signal: AbortSignal,
+): Promise<KiroForbiddenCategory> {
+  try {
+    const bytes = await readBoundedResponseBody(
+      response,
+      signal,
+      (code) => new Error(code),
+    );
+    // Reduce inputs to fixed categories/booleans before forming an object;
+    // neither message text nor arbitrary reason strings survive the reviver.
+    const raw = object(
+      JSON.parse(new TextDecoder().decode(bytes), (key, value: unknown) => {
+        if (key === "reason") {
+          if (
+            value === "UNAUTHORIZED_CUSTOMIZATION_RESOURCE_ACCESS" ||
+            value === "UNAUTHORIZED_WORKSPACE_CONTEXT_FEATURE_ACCESS"
+          )
+            return "policy_access_denied";
+          return value == null ? null : "unknown";
+        }
+        if (key === "message")
+          return (
+            value === "The bearer token included in the request is invalid."
+          );
+        return key === "" ? value : undefined;
+      }),
+    );
+    // Vendor-generated CodeWhisperer AccessDeniedExceptionReason definitions:
+    // https://github.com/aws/amazon-q-developer-cli/blob/main/crates/amzn-codewhisperer-client/src/types/_access_denied_exception_reason.rs
+    if (raw?.reason === "policy_access_denied") return "policy_access_denied";
+    // No invalid/expired-token reason code is established by that enum. AWS
+    // documents this exact 403 message; match it only when reason is absent.
+    // https://aws.amazon.com/tw/events/taiwan/techblogs/troubleshooting/
+    if (raw && raw.reason == null && raw.message === true)
+      return "invalid_token";
+  } catch {
+    // Malformed, oversized, or unreadable 403 bodies establish no auth verdict.
+  }
+  return "unknown";
 }
 
 /** Kiro CLI 2.24's Get-Usage-Limits schema; each pool is reported separately. */

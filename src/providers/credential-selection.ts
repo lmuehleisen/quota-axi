@@ -25,6 +25,8 @@
  *    transport, decoding, and server failures never trigger credential
  *    switching or masquerade as authentication verdicts;
  * 6. continues past `rejected` outcomes to the next candidate.
+ * 7. stops on a definitive `forbidden` access denial without switching
+ *    credentials or treating the denial as expired authentication.
  *
  * Verdict merge: any empirical success wins. Otherwise a transient outcome
  * keeps the provider transient (stored-metadata classification stands, and
@@ -69,6 +71,8 @@ export type AttemptOutcome<R> =
   | { kind: "live_no_quota" }
   /** Definitive authentication rejection (HTTP 401/403 or equivalent). */
   | { kind: "rejected"; error: string }
+  /** Definitive policy/access denial, not an authentication verdict or retry. */
+  | { kind: "forbidden"; error: string }
   /** Transport, decoding, rate-limit, or server failure; not an auth verdict. */
   | { kind: "transient"; error: string; retryAfter?: string };
 
@@ -92,6 +96,8 @@ export type CredentialSelectionOutcome =
   | "live_no_quota"
   /** A transient failure stopped selection before an empirical decision. */
   | "transient"
+  /** A definitive access denial stopped selection. */
+  | "forbidden"
   /** Every try-able candidate was empirically rejected. */
   | "all_rejected"
   /** No candidate was try-able. */
@@ -105,6 +111,8 @@ export type CredentialSelection<R> = {
   result?: R;
   /** First transient failure, when one stopped the loop. */
   transientError?: string;
+  /** Fixed access-denial classification, when selection stopped on policy. */
+  forbiddenError?: string;
   retryAfter?: string;
   /**
    * True when a rejected or untried expired candidate has a locally-owned
@@ -136,6 +144,7 @@ export async function selectCredential<C, R>(
 
   let liveWinner: SelectedCandidate | undefined;
   let transientError: string | undefined;
+  let forbiddenError: string | undefined;
   let retryAfter: string | undefined;
   let tried = 0;
   let rejectedCount = 0;
@@ -170,6 +179,11 @@ export async function selectCredential<C, R>(
       rejectedCount += 1;
       continue;
     }
+    if (outcome.kind === "forbidden") {
+      record.error = outcome.error;
+      forbiddenError = outcome.error;
+      break;
+    }
     record.error = outcome.error;
     record.retryAfter = outcome.retryAfter;
     transientError = outcome.error;
@@ -189,10 +203,14 @@ export async function selectCredential<C, R>(
       outcome: "live_no_quota",
       winner: liveWinner,
       transientError,
+      ...(forbiddenError !== undefined ? { forbiddenError } : {}),
       retryAfter,
       refreshable,
       results,
     };
+  }
+  if (forbiddenError !== undefined) {
+    return { outcome: "forbidden", forbiddenError, refreshable, results };
   }
   if (transientError !== undefined) {
     return {

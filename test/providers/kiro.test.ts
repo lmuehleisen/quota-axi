@@ -14,6 +14,9 @@ import { writeCachedProviders } from "../../src/cache.js";
 import { cacheFilePath } from "../../src/lib/fs.js";
 import { coalesceVerifiedSubscriptions } from "../../src/providers/accounts.js";
 import * as processUtils from "../../src/lib/process.js";
+import { PROVIDER_RESPONSE_LIMIT_BYTES } from "../../src/lib/http.js";
+import { renderQuotaToon, redactedResponse } from "../../src/render.js";
+import type { ProviderQuota, QuotaAxiResponse } from "../../src/types.js";
 
 const options = { allowKeychainPrompt: false, refreshCredentials: false };
 const now = "2026-02-15T00:00:00.000Z";
@@ -86,6 +89,10 @@ function usage(
     ],
     ...root,
   };
+}
+
+function responseFor(report: ProviderQuota): QuotaAxiResponse {
+  return { generatedAt: now, schemaVersion: 5, providers: [report] };
 }
 
 describe("Kiro quota", () => {
@@ -283,6 +290,269 @@ describe("Kiro quota", () => {
       );
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(JSON.stringify(result)).not.toContain("private-body");
+    },
+  );
+
+  it("treats the documented invalid-bearer 403 as definitive soft expiry", async () => {
+    sql.mockResolvedValue(
+      JSON.stringify([credential({ expiry: "2026-02-01T00:00:00Z" })]),
+    );
+    fetchMock.mockResolvedValue(
+      Response.json(
+        {
+          __type: "com.amazon.aws.codewhisperer#AccessDeniedException",
+          message: "The bearer token included in the request is invalid.",
+          reason: null,
+        },
+        { status: 403 },
+      ),
+    );
+    const report = await kiroAdapter.fetchQuota(options);
+    expect(report.state).toMatchObject({
+      status: "unavailable",
+      authStatus: "expired_refreshable",
+      reason: "credentials_expired",
+      remedyCommand: "kiro-cli login",
+    });
+    expect(renderQuotaToon(responseFor(report), "quota-axi", true)).toContain(
+      "kiro_auth_rejected_invalid_token",
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(sql.mock.calls.every(([command]) => command === "sqlite3")).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    { expiry: "2026-02-16T00:00:00Z" },
+    { expiry: "2026-02-01T00:00:00Z", refreshable: 0 },
+  ])(
+    "does not invent soft expiry for a rejected 403 with %j",
+    async (stored) => {
+      sql.mockResolvedValue(JSON.stringify([credential(stored)]));
+      fetchMock.mockResolvedValue(
+        Response.json(
+          { message: "The bearer token included in the request is invalid." },
+          { status: 403 },
+        ),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      expect(report.state.status).toBe("auth_required");
+      expect(report.state.authStatus).toBeUndefined();
+      expect(report.state.reason).toBeUndefined();
+      expect(report.state.remedyCommand).toBe("kiro-cli login");
+    },
+  );
+
+  it("tries the next source after invalid-bearer 403 rejection", async () => {
+    process.env.KIRO_API_KEY = "synthetic-api-key";
+    fetchMock.mockResolvedValueOnce(
+      Response.json(
+        { message: "The bearer token included in the request is invalid." },
+        { status: 403 },
+      ),
+    );
+    const report = await kiroAdapter.fetchQuota(options);
+    expect(report.state.status).toBe("fresh");
+    expect(report.attempts?.[0].error).toBe("kiro_auth_rejected_invalid_token");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(
+      "Bearer synthetic-api-key",
+    );
+  });
+
+  it.each([401, 403])(
+    "does not prescribe CLI login for an environment-only HTTP %i rejection",
+    async (status) => {
+      process.env.KIRO_CLI_DATABASE = join(directory, "absent");
+      process.env.KIRO_API_KEY = "synthetic-api-key";
+      fetchMock.mockResolvedValue(
+        Response.json(
+          { message: "The bearer token included in the request is invalid." },
+          { status },
+        ),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      expect(report.state.status).toBe("auth_required");
+      expect(report.state.remedyCommand).toBeUndefined();
+      expect(report.attempts).toContainEqual({
+        source: "env:KIRO_API_KEY",
+        status: "failed",
+        credentialPresent: true,
+        error:
+          status === 401
+            ? "kiro_auth_rejected"
+            : "kiro_auth_rejected_invalid_token",
+      });
+      expect(
+        renderQuotaToon(responseFor(report), "quota-axi", true),
+      ).not.toContain("kiro-cli login");
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(sql).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([401, 403])(
+    "keeps the native login remedy when native and environment sources reject HTTP %i",
+    async (status) => {
+      process.env.KIRO_API_KEY = "synthetic-api-key";
+      fetchMock.mockImplementation(async () =>
+        Response.json(
+          { message: "The bearer token included in the request is invalid." },
+          { status },
+        ),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      expect(report.state.status).toBe("auth_required");
+      expect(report.state.remedyCommand).toBe("kiro-cli login");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    "UNAUTHORIZED_CUSTOMIZATION_RESOURCE_ACCESS",
+    "UNAUTHORIZED_WORKSPACE_CONTEXT_FEATURE_ACCESS",
+  ])(
+    "reports %s as an access denial without switching or expiry",
+    async (reason) => {
+      process.env.KIRO_API_KEY = "synthetic-api-key";
+      sql.mockResolvedValue(
+        JSON.stringify([credential({ expiry: "2026-02-01T00:00:00Z" })]),
+      );
+      fetchMock.mockResolvedValue(
+        Response.json(
+          { reason, message: "private policy detail" },
+          { status: 403 },
+        ),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      expect(report.state).toMatchObject({
+        status: "error",
+        error: "kiro_usage_policy_access_denied_contact_administrator",
+      });
+      expect(report.state.authStatus).toBeUndefined();
+      expect(report.state.reason).toBeUndefined();
+      expect(report.state.remedyCommand).toBeUndefined();
+      expect(renderQuotaToon(responseFor(report), "quota-axi", true)).toContain(
+        "policy_access_denied_contact_administrator",
+      );
+      expect(fetchMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    "not json",
+    "null",
+    "[]",
+    "{}",
+    JSON.stringify({
+      nested: {
+        message: "The bearer token included in the request is invalid.",
+      },
+    }),
+    JSON.stringify({ reason: "INVALID_TOKEN" }),
+    JSON.stringify({ reason: "EXPIRED_TOKEN" }),
+    JSON.stringify({ reason: "FEATURE_NOT_SUPPORTED" }),
+    JSON.stringify({ reason: "TEMPORARILY_SUSPENDED" }),
+    JSON.stringify({
+      reason: { code: "UNAUTHORIZED_CUSTOMIZATION_RESOURCE_ACCESS" },
+    }),
+    JSON.stringify({
+      reason: "NEW_REASON",
+      message: "The bearer token included in the request is invalid.",
+    }),
+    JSON.stringify({
+      message:
+        "The bearer token included in the request is invalid. Extra detail",
+    }),
+  ])("preserves an unknown 403 as transient for body %s", async (body) => {
+    process.env.KIRO_API_KEY = "synthetic-api-key";
+    fetchMock.mockResolvedValue(new Response(body, { status: 403 }));
+    const report = await kiroAdapter.fetchQuota(options);
+    expect(report.state).toMatchObject({
+      status: "unavailable",
+      error: "kiro_usage_forbidden",
+    });
+    expect(report.state.remedyCommand).toBeUndefined();
+    expect(renderQuotaToon(responseFor(report), "quota-axi", true)).toContain(
+      "kiro_usage_forbidden_unknown",
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])(
+    "bounds a 403 body with declared length %s",
+    async (declared) => {
+      process.env.KIRO_API_KEY = "synthetic-api-key";
+      const body = JSON.stringify({
+        message: "The bearer token included in the request is invalid.",
+        padding: "x".repeat(PROVIDER_RESPONSE_LIMIT_BYTES),
+      });
+      fetchMock.mockResolvedValue(
+        new Response(body, {
+          status: 403,
+          headers: declared ? { "content-length": String(body.length) } : {},
+        }),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      expect(report.state.error).toBe("kiro_usage_forbidden");
+      expect(report.attempts?.[0].error).toBe("kiro_usage_forbidden_unknown");
+      expect(fetchMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("keeps an unreadable 403 body transient without exposing the read error", async () => {
+    process.env.KIRO_API_KEY = "synthetic-api-key";
+    fetchMock.mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("synthetic-private-read-error"));
+          },
+        }),
+        { status: 403 },
+      ),
+    );
+    const report = await kiroAdapter.fetchQuota(options);
+    expect(report.state.error).toBe("kiro_usage_forbidden");
+    expect(report.attempts?.[0].error).toBe("kiro_usage_forbidden_unknown");
+    expect(JSON.stringify(report)).not.toContain(
+      "synthetic-private-read-error",
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "UNAUTHORIZED_CUSTOMIZATION_RESOURCE_ACCESS",
+    "synthetic-token-like-value",
+  ])(
+    "never renders or caches private 403 fields for reason %s",
+    async (reason) => {
+      writeCachedProviders([await kiroAdapter.fetchQuota(options)]);
+      const privateValues = [
+        "synthetic-token-like-value",
+        "arn:aws:kiro:us-east-1:000000000000:profile/private-example",
+        "private-account-example",
+        "private@example.com",
+      ];
+      fetchMock.mockResolvedValue(
+        Response.json(
+          { reason, message: privateValues.join(" "), token: privateValues[0] },
+          { status: 403 },
+        ),
+      );
+      const report = await kiroAdapter.fetchQuota(options);
+      const response = responseFor(report);
+      writeCachedProviders([report]);
+      const outputs = [
+        JSON.stringify(response),
+        JSON.stringify(redactedResponse(response, false)),
+        renderQuotaToon(response, "quota-axi", false),
+        renderQuotaToon(response, "quota-axi", true),
+        readFileSync(cacheFilePath(), "utf8"),
+      ];
+      for (const output of outputs)
+        for (const value of privateValues) expect(output).not.toContain(value);
     },
   );
 
