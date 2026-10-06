@@ -2,30 +2,36 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function clampPercent(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(100, Math.max(0, Math.round(value)));
+export function clampPercent(value: number): number | undefined {
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return Math.min(100, value);
 }
 
 export function percentRemaining(
   percentUsed: number | undefined,
 ): number | undefined {
   if (percentUsed === undefined) return undefined;
-  return clampPercent(100 - percentUsed);
+  const used = clampPercent(percentUsed);
+  return used === undefined ? undefined : 100 - used;
 }
 
 export function parseEpochOrIso(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value * 1000).toISOString();
+    return dateMillisToIso(value * 1000);
   }
   if (typeof value === "string" && value.trim() !== "") {
     const date = new Date(value);
     if (!Number.isNaN(date.getTime())) {
       return date.toISOString();
     }
-    return value;
+    return undefined;
   }
   return undefined;
+}
+
+export function dateMillisToIso(value: number): string | undefined {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
 }
 
 export function retryAfterToIso(

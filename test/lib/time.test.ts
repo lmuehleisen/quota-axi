@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { calendarMonthsBefore } from "../../src/lib/time.js";
+import {
+  calendarMonthsBefore,
+  clampPercent,
+  percentRemaining,
+  parseEpochOrIso,
+} from "../../src/lib/time.js";
 
 describe("calendarMonthsBefore", () => {
   it("keeps the day and UTC time of day one calendar month earlier", () => {
@@ -41,5 +46,46 @@ describe("calendarMonthsBefore", () => {
 
   it("returns undefined when the result is not strictly earlier", () => {
     expect(calendarMonthsBefore("2026-10-10T00:00:00.000Z", 0)).toBeUndefined();
+  });
+});
+
+describe("percentage and timestamp boundaries", () => {
+  it.each([99.49, 99.5, 99.9])("preserves fractional %s", (value) => {
+    expect(clampPercent(value)).toBe(value);
+    expect(percentRemaining(value)).toBe(100 - value);
+  });
+  it.each([-1, NaN, Infinity, -Infinity])(
+    "rejects invalid percentage %s",
+    (value) => {
+      expect(clampPercent(value)).toBeUndefined();
+      expect(percentRemaining(value)).toBeUndefined();
+    },
+  );
+  it("bounds usage above the allowance", () => {
+    expect(clampPercent(101)).toBe(100);
+    expect(percentRemaining(101)).toBe(0);
+  });
+  it.each([
+    1e20,
+    -1e20,
+    Number.MAX_VALUE,
+    NaN,
+    Infinity,
+    "not a date",
+    "999999-01-01T00:00:00Z",
+  ])("rejects reset %s without throwing", (value) => {
+    expect(parseEpochOrIso(value)).toBeUndefined();
+  });
+  it("accepts representable epoch boundaries and ISO instants", () => {
+    expect(parseEpochOrIso(0)).toBe("1970-01-01T00:00:00.000Z");
+    expect(parseEpochOrIso(8_640_000_000_000)).toBe(
+      "+275760-09-13T00:00:00.000Z",
+    );
+    expect(parseEpochOrIso(-8_640_000_000_000)).toBe(
+      "-271821-04-20T00:00:00.000Z",
+    );
+    expect(parseEpochOrIso("2026-10-06T20:00:00Z")).toBe(
+      "2026-10-06T20:00:00.000Z",
+    );
   });
 });

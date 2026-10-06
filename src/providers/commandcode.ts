@@ -3,7 +3,11 @@ import {
   readCachedCommandCodeProvider as readCachedProviderFromDisk,
 } from "../cache.js";
 import { providerFetch } from "../lib/http.js";
-import { clampPercent, retryAfterToIso } from "../lib/time.js";
+import {
+  clampPercent,
+  percentRemaining,
+  retryAfterToIso,
+} from "../lib/time.js";
 import type {
   AuthProviderReport,
   AuthSourceReport,
@@ -755,7 +759,7 @@ function measuredWindow(
     label: id === "five_hour" ? "5-hour" : "Weekly",
     kind: id === "five_hour" ? "session" : "weekly",
     percentUsed,
-    percentRemaining: clampPercent(100 - percentUsed),
+    percentRemaining: percentRemaining(percentUsed),
     windowSeconds: id === "five_hour" ? FIVE_HOURS_SECONDS : WEEK_SECONDS,
     ...(resetsAt ? { resetsAt } : {}),
   };
@@ -784,9 +788,7 @@ function unknownWindow(
     used !== undefined && cap !== undefined && cap > 0
       ? {
           percentUsed: clampPercent((used / cap) * 100),
-          percentRemaining: clampPercent(
-            100 - clampPercent((used / cap) * 100),
-          ),
+          percentRemaining: percentRemaining(clampPercent((used / cap) * 100)),
         }
       : {};
   return {
@@ -894,8 +896,8 @@ function orgLimitWindows(raw: unknown): {
       spent !== undefined && limit !== undefined && limit > 0
         ? {
             percentUsed: clampPercent((spent / limit) * 100),
-            percentRemaining: clampPercent(
-              100 - clampPercent((spent / limit) * 100),
+            percentRemaining: percentRemaining(
+              clampPercent((spent / limit) * 100),
             ),
           }
         : {};

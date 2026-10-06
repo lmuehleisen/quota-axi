@@ -9,11 +9,16 @@ import {
   stampCodexStoredAccountId,
 } from "../cache.js";
 import { readJsonFileResult, type JsonFileReadResult } from "../lib/fs.js";
-import { providerFetch } from "../lib/http.js";
+import {
+  providerFetch,
+  providerRequestFailure,
+  readBoundedResponseJson,
+} from "../lib/http.js";
 import { findCommandPath, terminateChild } from "../lib/process.js";
 import { redactSecret } from "../lib/secret.js";
 import {
   clampPercent,
+  dateMillisToIso,
   nowIso,
   parseEpochOrIso,
   retryAfterToIso,
@@ -1530,12 +1535,14 @@ async function fetchOauthUsage(credentials: CodexCredentials): Promise<{
         lastError = new Error("Codex quota unavailable");
         continue;
       }
-      const quota = normalizeCodexUsage(await response.json());
+      const quota = normalizeCodexUsage(
+        await readBoundedResponseJson(response, controller.signal),
+      );
       if (quota) return quota;
       lastError = new Error("Codex quota unavailable");
     } catch (error) {
       if (error instanceof RateLimitError) throw error;
-      lastError = error;
+      lastError = providerRequestFailure(error, controller.signal);
     } finally {
       clearTimeout(timer);
     }
@@ -1731,7 +1738,8 @@ function normalizeWindow(
   const data = objectValue(raw) as RawWindow | undefined;
   if (!data) return undefined;
   const used = numberValue(data.used_percent) ?? numberValue(data.usedPercent);
-  if (used === undefined) return undefined;
+  if (data.used_percent === undefined && data.usedPercent === undefined)
+    return undefined;
   const windowSeconds =
     numberValue(data.limit_window_seconds) ??
     (numberValue(data.windowDurationMins) === undefined
@@ -1740,13 +1748,13 @@ function normalizeWindow(
   const resetFromSeconds =
     numberValue(data.reset_after_seconds) === undefined
       ? undefined
-      : new Date(
+      : dateMillisToIso(
           Date.now() + numberValue(data.reset_after_seconds)! * 1000,
-        ).toISOString();
+        );
   const identity = windowIdentity(windowSeconds, fallbackIdentity, identities);
   return withRemaining({
     ...identity,
-    percentUsed: clampPercent(used),
+    percentUsed: used === undefined ? undefined : clampPercent(used),
     resetsAt:
       parseEpochOrIso(data.reset_at) ??
       parseEpochOrIso(data.resetsAt) ??

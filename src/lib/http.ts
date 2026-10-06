@@ -131,6 +131,10 @@ async function dispatchedFetch(
 }
 
 export const PROVIDER_RESPONSE_LIMIT_BYTES = 262_144;
+type ProviderBodyFailureCode =
+  | "response_too_large"
+  | "response_size_unverifiable"
+  | "provider_timeout";
 
 /**
  * Read a provider response body under the shared decoded-size cap. The
@@ -141,7 +145,7 @@ export const PROVIDER_RESPONSE_LIMIT_BYTES = 262_144;
 export async function readBoundedResponseBody(
   response: Response,
   signal: AbortSignal,
-  fail: (code: string) => Error,
+  fail: (code: ProviderBodyFailureCode) => Error,
 ): Promise<Uint8Array> {
   const declared = response.headers.get("content-length")?.trim();
   if (
@@ -149,17 +153,23 @@ export async function readBoundedResponseBody(
     /^\d+$/.test(declared) &&
     Number(declared) > PROVIDER_RESPONSE_LIMIT_BYTES
   ) {
-    await response.body?.cancel().catch(() => undefined);
+    void response.body?.cancel().catch(() => undefined);
     throw fail("response_too_large");
   }
   if (!response.body) throw fail("response_size_unverifiable");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
+  let rejectAbort: (error: Error) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = () => rejectAbort(fail("provider_timeout"));
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
       if (signal.aborted) throw fail("provider_timeout");
-      const result = await reader.read();
+      const result = await Promise.race([reader.read(), aborted]);
       if (result.done) break;
       length += result.value.byteLength;
       if (length > PROVIDER_RESPONSE_LIMIT_BYTES)
@@ -167,6 +177,7 @@ export async function readBoundedResponseBody(
       chunks.push(result.value);
     }
   } finally {
+    signal.removeEventListener("abort", onAbort);
     void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
@@ -177,4 +188,53 @@ export async function readBoundedResponseBody(
     offset += chunk.byteLength;
   }
   return bytes;
+}
+
+/** Only codes constructed here may cross the request boundary. */
+export class ProviderRequestError extends Error {
+  constructor(
+    readonly code:
+      | ProviderBodyFailureCode
+      | "invalid_json"
+      | "provider_request_failed",
+  ) {
+    super(code);
+    this.name = "ProviderRequestError";
+  }
+}
+
+export function providerRequestFailure(
+  error: unknown,
+  signal?: AbortSignal,
+): ProviderRequestError {
+  if (error instanceof ProviderRequestError) return error;
+  return new ProviderRequestError(
+    signal?.aborted ||
+      (error instanceof Error &&
+        (error.name === "AbortError" || error.name === "TimeoutError"))
+      ? "provider_timeout"
+      : "provider_request_failed",
+  );
+}
+
+/** Never expose JSON diagnostics: engines can quote secret body prefixes. */
+export async function readBoundedResponseJson(
+  response: Response,
+  signal: AbortSignal,
+): Promise<unknown> {
+  let bytes: Uint8Array;
+  try {
+    bytes = await readBoundedResponseBody(
+      response,
+      signal,
+      (code) => new ProviderRequestError(code),
+    );
+  } catch (error) {
+    throw providerRequestFailure(error, signal);
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    throw new ProviderRequestError("invalid_json");
+  }
 }
