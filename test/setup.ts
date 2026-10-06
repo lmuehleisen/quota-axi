@@ -67,3 +67,11 @@ delete process.env.QUOTA_AXI_SNAPSHOT;
 // CLI login store is already unreachable because XDG_CONFIG_HOME is sandboxed
 // above. Tests that exercise Muse set their own credential environment.
 delete process.env.META_API_KEY;
+
+// Kiro credential reads must only touch synthetic databases in tests.
+process.env.KIRO_CLI_DATABASE = join(
+  tmpdir(),
+  `quota-axi-test-no-kiro-${process.pid}-${randomUUID()}`,
+);
+delete process.env.KIRO_API_KEY;
+delete process.env.KIRO_DATA_DIR;
