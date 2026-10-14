@@ -51,8 +51,26 @@ export const MUSE_KEY_PATH = "/muse-code/key";
 /** The Muse CLI sends this on every mint, including startup `{ onboard: false }`. */
 export const MUSE_API_VERSION = "1.0.0";
 
+/**
+ * The OpenAI-compatible inference endpoint. The free `/muse-code/key` read
+ * omits `subs_usage` while the five-hour window is idle, so when that read
+ * returns no usable usage this streamed response carries the subscription's
+ * windows in a `response.subscription_usage` event. This is a billed call -
+ * the smallest the API allows - and runs only as the documented fallback; see
+ * the Muse exception in AGENTS.md / README Provider notes.
+ */
+export const MUSE_RESPONSES_PATH = "/v1/responses";
+/** Spark is the model the Muse Code subscription bills against. */
+export const MUSE_PING_MODEL = "muse-spark-1.3";
+/** The API floor: `max_output_tokens` must be >= 16, so the ping cannot be cheaper. */
+export const MUSE_PING_MAX_OUTPUT_TOKENS = 16;
+/** The SSE event whose payload carries the subscription window usage. */
+const MUSE_SUBSCRIPTION_USAGE_EVENT = "response.subscription_usage";
+
 export const MUSE_AUTH_FILE_SOURCE = "muse:auth.json";
 export const MUSE_API_KEY_SOURCE = "env:META_API_KEY";
+/** Marks, in `attempts`/`sourcesTried`, that the billed usage ping was used. */
+export const MUSE_USAGE_PING_SOURCE = "muse:usage-ping";
 
 /**
  * Ownership-stability order. The Muse CLI's own sign-in store comes first -
@@ -97,10 +115,29 @@ const RESPONSE_KEYS = new Set([
 ]);
 
 /**
+ * The only keys that survive parsing a `/v1/responses` SSE event. The usage
+ * ping's stream also carries generated model output and request metadata; this
+ * reviver keeps only the subscription window shape, so no model text, token
+ * count, or account field reaches an object, the cache, or any output.
+ */
+const RESPONSES_EVENT_KEYS = new Set([
+  "type",
+  "subscription",
+  "window",
+  "weekly",
+  "used_percent",
+  "window_duration_mins",
+  "resets_at",
+]);
+
+/**
  * The only `auth.json` keys that survive parsing. `refresh_token` survives as
  * `true` - presence decides soft expiry versus sign-out, and its value is never
  * held, read, or exchanged. `storage` survives so a `keychain` pointer can
  * route the lookup to the Keychain source instead of reporting a broken file.
+ * `api_key` survives because it is the minted inference key the billed usage
+ * ping fallback sends as a bearer; it is used only for that request and is
+ * never logged, cached, or rendered.
  */
 const AUTH_FILE_KEYS = new Set([
   "providers",
@@ -108,10 +145,20 @@ const AUTH_FILE_KEYS = new Set([
   "access_token",
   "refresh_token",
   "storage",
+  "api_key",
 ]);
 
 export type MuseLocalResolution =
-  | { status: "resolved"; credential: string; refreshable: boolean }
+  | {
+      status: "resolved";
+      credential: string;
+      refreshable: boolean;
+      /**
+       * The minted inference key, when the store carries one. Used only as the
+       * bearer for the billed usage-ping fallback; never logged or cached.
+       */
+      pingKey?: string;
+    }
   | { status: "absent" }
   | { status: "structurally_invalid"; error: string }
   | { status: "read_error"; error: string }
@@ -151,10 +198,20 @@ type MuseFailureOptions = {
   retryAfter?: string;
 };
 
-type MuseCandidate = { credential: string; contextId: string };
+type MuseCandidate = {
+  credential: string;
+  contextId: string;
+  pingKey?: string;
+};
 
 type MuseReading =
-  | { kind: "fresh"; payload: NormalizedMusePayload; refreshedAt: number }
+  | {
+      kind: "fresh";
+      payload: NormalizedMusePayload;
+      refreshedAt: number;
+      /** Set when the billed usage ping was fired, with its outcome. */
+      ping?: "success" | "failed";
+    }
   | { kind: "reused"; snapshot: ProviderQuota };
 
 export function museAuthFilePath(
@@ -236,6 +293,9 @@ export function createMuseAuthFileSource(
         status: "resolved",
         credential,
         refreshable: Object.hasOwn(meta, "refresh_token"),
+        ...(usableLiteralSecret(meta.api_key) !== undefined
+          ? { pingKey: usableLiteralSecret(meta.api_key) }
+          : {}),
       };
     },
   };
@@ -381,6 +441,7 @@ async function acquireMuseQuota(
         credential: {
           credential: resolution.credential,
           contextId: museCacheContextId(source.name, resolution.credential),
+          ...(resolution.pingKey ? { pingKey: resolution.pingKey } : {}),
         },
       });
       continue;
@@ -539,6 +600,43 @@ async function attemptCandidate(
     const payload = await requestKeyUsage(credential, dependencies);
     const refreshedAt = dependencies.now();
     const normalized = normalizeMusePayload(payload, refreshedAt);
+
+    // Fallback: the free key read omits `subs_usage` while the five-hour
+    // window is idle. When the subscription is active but no usable window
+    // came back, and the store carries a minted inference key, one billed
+    // `/v1/responses` ping reads the windows from its `subscription_usage`
+    // event. The gate claim above already bounds this to one attempt per
+    // credential per interval, so a success is cached and an empty result or a
+    // failure is recorded and replayed - never retried in a loop.
+    if (
+      shouldPingForUsage(payload, normalized) &&
+      candidate.credential.pingKey !== undefined
+    ) {
+      const pinged = await pingForUsage(
+        candidate.credential.pingKey,
+        normalized,
+        dependencies,
+      );
+      const pingedAt = dependencies.now();
+      const emptyQuota = emptyQuotaMarker(pinged.payload, pingedAt);
+      safeRecord(dependencies.ledger, contextId, {
+        attemptedAt: startedAt,
+        outcome: "quota",
+        ...(emptyQuota ? { emptyQuota } : {}),
+      });
+      return {
+        outcome: {
+          kind: "quota",
+          result: {
+            kind: "fresh",
+            payload: pinged.payload,
+            refreshedAt: pingedAt,
+            ping: pinged.windowed ? "success" : "failed",
+          },
+        },
+      };
+    }
+
     const emptyQuota = emptyQuotaMarker(normalized, refreshedAt);
     safeRecord(dependencies.ledger, contextId, {
       attemptedAt: startedAt,
@@ -737,6 +835,23 @@ function freshReport(
   sourcesTried: string[],
 ): ProviderQuota {
   const { payload } = reading;
+  // When the billed usage ping ran, make it visible in `--full`: a ping
+  // attempt (success or failed) and the ping source in `sourcesTried`.
+  const reportedAttempts = reading.ping
+    ? [
+        ...attempts,
+        reading.ping === "success"
+          ? { source: MUSE_USAGE_PING_SOURCE, status: "success" as const }
+          : {
+              source: MUSE_USAGE_PING_SOURCE,
+              status: "failed" as const,
+              error: "muse_usage_ping_failed",
+            },
+      ]
+    : attempts;
+  const reportedSources = reading.ping
+    ? [...sourcesTried, MUSE_USAGE_PING_SOURCE]
+    : sourcesTried;
   return {
     provider: "muse",
     label: LABEL,
@@ -751,9 +866,9 @@ function freshReport(
       ...(payload.untrustedWindowIds.length > 0
         ? { untrustedWindowIds: payload.untrustedWindowIds }
         : {}),
-      sourcesTried,
+      sourcesTried: reportedSources,
     },
-    attempts,
+    attempts: reportedAttempts,
   };
 }
 
@@ -1022,6 +1137,263 @@ function rejectHttpFailure(response: Response, receivedAt: number): never {
     authUsable: true,
     staleEligible: true,
   });
+}
+
+/**
+ * Whether to fall back to the billed usage ping. Only when the free key read
+ * succeeded for an active subscription (`is_subs_active` is not `false`) yet
+ * published no window and named none as untrusted - the documented idle
+ * five-hour case where Meta omits `subs_usage` entirely. A present-but-garbled
+ * usage object (named in `untrustedWindowIds`) is a different signal and is
+ * reported as-is rather than spending a request on it.
+ */
+function shouldPingForUsage(
+  payload: unknown,
+  normalized: NormalizedMusePayload,
+): boolean {
+  const root = objectValue(payload);
+  if (!root || root.is_subs_active === false) return false;
+  return (
+    normalized.windows.length === 0 &&
+    normalized.untrustedWindowIds.length === 0
+  );
+}
+
+/**
+ * The billed fallback. One `/v1/responses` request with the smallest output the
+ * API allows reads the subscription windows from the stream's
+ * `response.subscription_usage` event. A failure here is not fatal: the free
+ * read already succeeded, so the empty reading it produced is returned
+ * unchanged (and recorded, so the gate does not retry the ping this interval).
+ */
+async function pingForUsage(
+  pingKey: string,
+  fallback: NormalizedMusePayload,
+  dependencies: MuseDependencies,
+): Promise<{ payload: NormalizedMusePayload; windowed: boolean }> {
+  try {
+    const subscription = await requestSubscriptionUsagePing(
+      pingKey,
+      dependencies,
+    );
+    const windows = normalizeMuseSubscription(subscription, dependencies.now());
+    // A ping that returned no usable window keeps the free read's result,
+    // including its plan, rather than discarding it for an empty ping.
+    if (windows.windows.length === 0)
+      return { payload: fallback, windowed: false };
+    return {
+      payload: {
+        ...(fallback.plan ? { plan: fallback.plan } : {}),
+        windows: windows.windows,
+        untrustedWindowIds: windows.untrustedWindowIds,
+      },
+      windowed: true,
+    };
+  } catch {
+    return { payload: fallback, windowed: false };
+  }
+}
+
+/**
+ * The one billed request. `POST /v1/responses`, bearer = the minted inference
+ * key, smallest allowed output, streamed. Reads the stream only until the
+ * `response.subscription_usage` event, then stops. No model text, token count,
+ * or account field is retained.
+ */
+async function requestSubscriptionUsagePing(
+  pingKey: string,
+  dependencies: MuseDependencies,
+): Promise<unknown> {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const deadline = setTimeout(
+    () => controller.abort(),
+    dependencies.deadlineMs,
+  );
+  const url = new URL(MUSE_RESPONSES_PATH, MUSE_API_ORIGIN).href;
+  try {
+    let response: Response;
+    try {
+      response = await dependencies.fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${pingKey}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          "User-Agent": USER_AGENT,
+        },
+        body: JSON.stringify({
+          model: MUSE_PING_MODEL,
+          input: "ping",
+          stream: true,
+          max_output_tokens: MUSE_PING_MAX_OUTPUT_TOKENS,
+        }),
+        credentials: "omit",
+        redirect: "manual",
+        signal,
+      });
+    } catch (error) {
+      if (signal.aborted || isAbortError(error))
+        throw new MuseFailure("request_timeout", { staleEligible: true });
+      throw new MuseFailure(localTransportCode(error), { staleEligible: true });
+    }
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined);
+      rejectHttpFailure(response, dependencies.now());
+    }
+    return await readSubscriptionUsageStream(response.body, signal);
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
+/**
+ * Reads an SSE stream only as far as the first `response.subscription_usage`
+ * event, bounded by `readBoundedResponseBody`'s size limit via the shared
+ * reader. Returns the parsed `subscription` object, or throws when the stream
+ * ends without one.
+ */
+async function readSubscriptionUsageStream(
+  body: ReadableStream<Uint8Array> | null,
+  signal: AbortSignal,
+): Promise<unknown> {
+  if (!body)
+    throw new MuseFailure("muse_stream_missing", { staleEligible: true });
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let buffer = "";
+  let event: string | undefined;
+  const dataLines: string[] = [];
+  let received = 0;
+  const limit = 256 * 1024;
+  try {
+    for (;;) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        if (signal.aborted || isAbortError(error))
+          throw new MuseFailure("request_timeout", { staleEligible: true });
+        throw new MuseFailure("network_unavailable", { staleEligible: true });
+      }
+      if (chunk.done) break;
+      received += chunk.value.byteLength;
+      if (received > limit)
+        throw new MuseFailure("response_too_large", { staleEligible: true });
+      try {
+        buffer += decoder.decode(chunk.value, { stream: true });
+      } catch {
+        throw new MuseFailure("response_invalid_utf8", { staleEligible: true });
+      }
+      const lines = buffer.split(/\r?\n/u);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line === "") {
+          const subscription = subscriptionFromEvent(event, dataLines);
+          event = undefined;
+          dataLines.length = 0;
+          if (subscription !== undefined) return subscription;
+        } else if (line.startsWith("event:")) {
+          event = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).replace(/^ /u, ""));
+        }
+      }
+    }
+    const subscription = subscriptionFromEvent(event, dataLines);
+    if (subscription !== undefined) return subscription;
+    throw new MuseFailure("muse_subscription_missing", { staleEligible: true });
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Cancelling a finished or failed stream does not change the result.
+    }
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Parses one completed SSE event. Returns the `subscription` object only for a
+ * `response.subscription_usage` event; every other event yields `undefined`.
+ * The body is parsed through a key-allowlist reviver, so no model text or
+ * token count survives.
+ */
+function subscriptionFromEvent(
+  event: string | undefined,
+  dataLines: string[],
+): unknown {
+  if (event !== MUSE_SUBSCRIPTION_USAGE_EVENT || dataLines.length === 0)
+    return undefined;
+  const text = dataLines.join("\n").trim();
+  if (!text || text === "[DONE]") return undefined;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text, (key, value: unknown) =>
+      key === "" || RESPONSES_EVENT_KEYS.has(key) ? value : undefined,
+    );
+  } catch {
+    return undefined;
+  }
+  const subscription = objectValue(objectValue(payload)?.subscription);
+  return subscription ?? undefined;
+}
+
+/**
+ * The `response.subscription_usage` event mirrors `subs_usage`: a `window`
+ * (rolling, 300 minutes on observed plans) and a `weekly` entry, each with
+ * `used_percent` and `resets_at`. Reuses the same window-building rules as the
+ * key endpoint so a ping-sourced reading is indistinguishable in shape.
+ */
+function normalizeMuseSubscription(
+  subscription: unknown,
+  now: number,
+): NormalizedMusePayload {
+  const root = objectValue(subscription);
+  const result: NormalizedMusePayload = { windows: [], untrustedWindowIds: [] };
+  if (!root) return result;
+  if (Object.hasOwn(root, "window")) {
+    const entry = objectValue(root.window);
+    const minutes = positiveFinite(entry?.window_duration_mins);
+    const windowSeconds =
+      minutes === undefined ? undefined : Math.round(minutes * 60);
+    const fiveHour = minutes === FIVE_HOUR_MINUTES;
+    pushWindow(
+      result,
+      "subs_usage:window",
+      entry,
+      {
+        id: fiveHour ? "five_hour" : "window",
+        label: fiveHour
+          ? "session"
+          : windowSeconds === undefined
+            ? "window"
+            : `${readableHours(windowSeconds)} window`,
+        kind: fiveHour ? "session" : "unknown",
+        ...(fiveHour
+          ? { windowSeconds: FIVE_HOURS_SECONDS }
+          : windowSeconds === undefined
+            ? {}
+            : { windowSeconds }),
+      },
+      now,
+    );
+  }
+  if (Object.hasOwn(root, "weekly")) {
+    pushWindow(
+      result,
+      "subs_usage:weekly",
+      objectValue(root.weekly),
+      {
+        id: "weekly",
+        label: "week",
+        kind: "weekly",
+        windowSeconds: WEEK_SECONDS,
+      },
+      now,
+    );
+  }
+  return result;
 }
 
 /**

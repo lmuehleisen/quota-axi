@@ -26,7 +26,11 @@ import {
   MUSE_API_VERSION,
   MUSE_AUTH_FILE_SOURCE,
   MUSE_KEY_PATH,
+  MUSE_PING_MAX_OUTPUT_TOKENS,
+  MUSE_PING_MODEL,
+  MUSE_RESPONSES_PATH,
   MUSE_SOURCE_ORDER,
+  MUSE_USAGE_PING_SOURCE,
   museAuthFilePath,
   normalizeMusePayload,
 } from "../../src/providers/muse.js";
@@ -1068,6 +1072,172 @@ describe("Muse payload normalization", () => {
   });
 });
 
+describe("Muse usage-ping fallback", () => {
+  // When `/muse-code/key` succeeds for an active subscription but omits
+  // `subs_usage` (the idle five-hour case), one billed `/v1/responses` ping
+  // reads the windows from its `response.subscription_usage` event.
+  const PING_WINDOW = {
+    window: {
+      used_percent: 0,
+      window_duration_mins: 300,
+      resets_at: Math.floor(NOW / 1000) + 7_200,
+    },
+    weekly: {
+      used_percent: 51,
+      resets_at: Math.floor(NOW / 1000) + 259_200,
+    },
+    tier: "SENTINEL-TIER-ID01",
+  };
+
+  function pingAdapter(
+    fetchImpl: ReturnType<typeof sequentialFetch>,
+    now: () => number = () => NOW,
+  ): ProviderAdapter {
+    return createMuseAdapter({
+      sources: [
+        authFileSource(authStoreWithPingKey()),
+        apiKeySource(undefined),
+      ],
+      fetch: fetchImpl as unknown as typeof fetch,
+      readCachedProvider: () => undefined,
+      deleteCachedProvider: () => undefined,
+      ledger: openLedger(),
+      now,
+    });
+  }
+
+  it("does not ping when the free key read already carries usage", async () => {
+    const request = sequentialFetch([jsonResponse(KEY_RESPONSE)]);
+    const report = await pingAdapter(request).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(new URL(String(request.mock.calls[0][0])).pathname).toBe(
+      MUSE_KEY_PATH,
+    );
+    expect(report.windows).toEqual(EXPECTED_WINDOWS);
+    expect(report.state.sourcesTried).not.toContain(MUSE_USAGE_PING_SOURCE);
+    expect(report.attempts?.map(({ source }) => source)).not.toContain(
+      MUSE_USAGE_PING_SOURCE,
+    );
+  });
+
+  it("pings /v1/responses and reports its subscription_usage windows when the free read omits usage", async () => {
+    const request = sequentialFetch([
+      jsonResponse(EMPTY_ACTIVE),
+      sseResponse([PING_PRELUDE, subscriptionUsageEvent(PING_WINDOW)]),
+    ]);
+    const report = await pingAdapter(request).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    const [keyUrl] = request.mock.calls[0];
+    const [pingUrl, pingInit] = request.mock.calls[1];
+    expect(new URL(String(keyUrl)).pathname).toBe(MUSE_KEY_PATH);
+    const ping = new URL(String(pingUrl));
+    expect(ping.pathname).toBe(MUSE_RESPONSES_PATH);
+    expect(pingInit?.method).toBe("POST");
+    expect(JSON.parse(String(pingInit?.body))).toEqual({
+      model: MUSE_PING_MODEL,
+      input: "ping",
+      stream: true,
+      max_output_tokens: MUSE_PING_MAX_OUTPUT_TOKENS,
+    });
+    // The ping is billed against the minted inference key, not the dca token.
+    expect(new Headers(pingInit?.headers).get("authorization")).toBe(
+      `Bearer ${API_KEY}`,
+    );
+
+    expect(report.state.status).toBe("fresh");
+    expect(report.state.authStatus).toBe("usable");
+    expect(report.plan).toBe("pro");
+    expect(report.windows.map(({ id }) => id)).toEqual(["five_hour", "weekly"]);
+    expect(report.windows[0]).toMatchObject({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 0,
+      percentRemaining: 100,
+    });
+    expect(report.windows[1]).toMatchObject({
+      id: "weekly",
+      kind: "weekly",
+      percentUsed: 51,
+      percentRemaining: 49,
+    });
+    // The billed ping is visible in --full evidence.
+    expect(report.state.sourcesTried).toContain(MUSE_USAGE_PING_SOURCE);
+    expect(report.attempts).toContainEqual({
+      source: MUSE_USAGE_PING_SOURCE,
+      status: "success",
+    });
+    const serialized = JSON.stringify(report);
+    for (const sentinel of SENTINELS)
+      expect(serialized).not.toContain(sentinel);
+  });
+
+  it("keeps the empty free reading when the ping fails rather than erroring", async () => {
+    const request = sequentialFetch([
+      jsonResponse(EMPTY_ACTIVE),
+      sseResponse([], 500),
+    ]);
+    const report = await pingAdapter(request).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(report.state.status).toBe("fresh");
+    expect(report.state.authStatus).toBe("usable");
+    expect(report.plan).toBe("pro");
+    expect(report.windows).toEqual([]);
+    // A failed ping is not a failed read: the free reading still stands.
+    expect(report.state.error).toBeUndefined();
+    // The billed ping attempt is still visible, marked failed.
+    expect(report.state.sourcesTried).toContain(MUSE_USAGE_PING_SOURCE);
+    expect(report.attempts).toContainEqual({
+      source: MUSE_USAGE_PING_SOURCE,
+      status: "failed",
+      error: "muse_usage_ping_failed",
+    });
+  });
+
+  it("fires at most one ping per gate interval: a replay inside it sends nothing", async () => {
+    useDiskCache();
+    let now = NOW;
+    const request = sequentialFetch([
+      jsonResponse(EMPTY_ACTIVE),
+      sseResponse([subscriptionUsageEvent(PING_WINDOW)]),
+    ]);
+    const adapter = () =>
+      createMuseAdapter({
+        sources: [
+          authFileSource(authStoreWithPingKey()),
+          apiKeySource(undefined),
+        ],
+        fetch: request as unknown as typeof fetch,
+        ledger: createFileMuseKeyReadLedger(undefined, () => now),
+        now: () => now,
+      });
+
+    const first = await adapter().fetchQuota(OPTIONS);
+    writeCachedProviders([first]);
+    now += MUSE_KEY_READ_INTERVAL_MS - 1_000;
+    const second = await adapter().fetchQuota(OPTIONS);
+
+    // Two requests total: the key read and its single ping. The replay inside
+    // the interval neither re-reads the key nor re-pings.
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(first.windows.map(({ id }) => id)).toEqual(["five_hour", "weekly"]);
+    expect(second.source).toBe("cache");
+    expect(second.windows.map(({ id }) => id)).toEqual(["five_hour", "weekly"]);
+    expect(second.state.error).toBeUndefined();
+  });
+
+  it("does not ping an inactive subscription", async () => {
+    const request = sequentialFetch([jsonResponse(INACTIVE)]);
+    const report = await pingAdapter(request).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(report.windows).toEqual([]);
+    expect(report.state.sourcesTried).not.toContain(MUSE_USAGE_PING_SOURCE);
+  });
+});
+
 describe("Muse quota semantics", () => {
   it("bounds all_models by the lower of the five-hour and weekly windows", async () => {
     const report = withQuotaSemantics(
@@ -1341,6 +1511,17 @@ function authStore(
   };
 }
 
+/** An `auth.json` that also carries the minted inference key for the ping. */
+function authStoreWithPingKey(
+  accessToken = ACCESS_TOKEN,
+): Record<string, unknown> {
+  const store = authStore(accessToken) as {
+    providers: { meta: Record<string, unknown> };
+  };
+  store.providers.meta.api_key = API_KEY;
+  return store;
+}
+
 function authFileSource(store: unknown) {
   return createMuseAuthFileSource(
     () => "/synthetic/muse/auth.json",
@@ -1406,6 +1587,28 @@ function jsonResponse(payload: unknown): Response {
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 }
+
+/** A text/event-stream response built from already-formatted SSE blocks. */
+function sseResponse(blocks: string[], status = 200): Response {
+  return new Response(blocks.join(""), {
+    status,
+    headers: { "content-type": "text/event-stream; charset=utf-8" },
+  });
+}
+
+/** The `response.subscription_usage` SSE event, as the live stream sends it. */
+function subscriptionUsageEvent(subscription: Record<string, unknown>): string {
+  const data = JSON.stringify({
+    type: "response.subscription_usage",
+    subscription,
+  });
+  return `event: response.subscription_usage\ndata: ${data}\n\n`;
+}
+
+/** A plausible pre-usage event the ping reader must skip over. */
+const PING_PRELUDE =
+  'event: response.created\ndata: {"type":"response.created"}\n\n' +
+  'event: response.incomplete\ndata: {"type":"response.incomplete"}\n\n';
 
 function cachedQuota(): ProviderQuota {
   return {
