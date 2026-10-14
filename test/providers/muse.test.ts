@@ -1005,6 +1005,24 @@ describe("Muse payload normalization", () => {
     ).toEqual(["subs_usage"]);
   });
 
+  it("names a present usage object with neither recognized window as untrusted, not empty", () => {
+    for (const subs_usage of [
+      {},
+      { some_future_window: { used_percent: 5 } },
+    ]) {
+      expect(
+        normalizeMusePayload(
+          { is_subs_active: true, subs_tier_name: "pro", subs_usage },
+          NOW,
+        ),
+      ).toEqual({
+        plan: "pro",
+        windows: [],
+        untrustedWindowIds: ["subs_usage"],
+      });
+    }
+  });
+
   it("an active mint body without subs_usage is fresh with plan and no untrusted field", async () => {
     const body = {
       api_key: "SENTINEL-MUSE-ISSUED-KEY-must-never-appear",
@@ -1226,6 +1244,67 @@ describe("Muse usage-ping fallback", () => {
     expect(second.source).toBe("cache");
     expect(second.windows.map(({ id }) => id)).toEqual(["five_hour", "weekly"]);
     expect(second.state.error).toBeUndefined();
+    // The replay still discloses the billed ping as the window source.
+    expect(first.state.sourcesTried).toContain(MUSE_USAGE_PING_SOURCE);
+    expect(second.state.sourcesTried).toContain(MUSE_USAGE_PING_SOURCE);
+    expect(second.attempts).toContainEqual({
+      source: MUSE_USAGE_PING_SOURCE,
+      status: "success",
+    });
+  });
+
+  it("preserves the ping disclosure when an empty/failed ping is replayed inside the interval", async () => {
+    useDiskCache();
+    let now = NOW;
+    const request = sequentialFetch([
+      jsonResponse(EMPTY_ACTIVE),
+      sseResponse([], 500),
+    ]);
+    const adapter = () =>
+      createMuseAdapter({
+        sources: [
+          authFileSource(authStoreWithPingKey()),
+          apiKeySource(undefined),
+        ],
+        fetch: request as unknown as typeof fetch,
+        ledger: createFileMuseKeyReadLedger(undefined, () => now),
+        now: () => now,
+      });
+
+    const first = await adapter().fetchQuota(OPTIONS);
+    expect(first.windows).toEqual([]);
+    now += MUSE_KEY_READ_INTERVAL_MS - 1_000;
+    const second = await adapter().fetchQuota(OPTIONS);
+
+    // No new request: the empty reading is replayed from the ledger marker.
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(second.source).toBe("cache");
+    expect(second.windows).toEqual([]);
+    expect(second.state.error).toBeUndefined();
+    // The failed billed ping stays disclosed on the replay.
+    expect(second.state.sourcesTried).toContain(MUSE_USAGE_PING_SOURCE);
+    expect(second.attempts).toContainEqual({
+      source: MUSE_USAGE_PING_SOURCE,
+      status: "failed",
+      error: "muse_usage_ping_failed",
+    });
+  });
+
+  it("does not ping a present but unrecognized subs_usage object", async () => {
+    const request = sequentialFetch([
+      jsonResponse({
+        is_subs_active: true,
+        subs_tier_name: "pro",
+        subs_usage: { some_future_window: { used_percent: 5 } },
+      }),
+    ]);
+    const report = await pingAdapter(request).fetchQuota(OPTIONS);
+
+    // Only the free read: an unrecognized usage object is untrusted, not empty.
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(report.windows).toEqual([]);
+    expect(report.state.untrustedWindowIds).toEqual(["subs_usage"]);
+    expect(report.state.sourcesTried).not.toContain(MUSE_USAGE_PING_SOURCE);
   });
 
   it("does not ping an inactive subscription", async () => {

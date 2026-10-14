@@ -618,7 +618,7 @@ async function attemptCandidate(
         dependencies,
       );
       const pingedAt = dependencies.now();
-      const emptyQuota = emptyQuotaMarker(pinged.payload, pingedAt);
+      const emptyQuota = emptyQuotaMarker(pinged.payload, pingedAt, true);
       safeRecord(dependencies.ledger, contextId, {
         attemptedAt: startedAt,
         outcome: "quota",
@@ -727,6 +727,7 @@ function replay(
 function emptyQuotaMarker(
   payload: NormalizedMusePayload,
   refreshedAt: number,
+  pinged = false,
 ): MuseEmptyQuota | undefined {
   if (payload.windows.length > 0) return undefined;
   return {
@@ -735,10 +736,15 @@ function emptyQuotaMarker(
     ...(payload.untrustedWindowIds.length > 0
       ? { untrustedWindowIds: payload.untrustedWindowIds }
       : {}),
+    ...(pinged ? { pinged: true } : {}),
   };
 }
 
 function replayedEmptyQuota(emptyQuota: MuseEmptyQuota): MuseReading {
+  // When the original reading fired the billed ping, keep disclosing it on the
+  // replay. Only the source marker is carried on the snapshot; `reusedReport`
+  // rebuilds the (failed, since there is no window) ping attempt from it.
+  const pingSources = emptyQuota.pinged ? [MUSE_USAGE_PING_SOURCE] : [];
   return {
     kind: "reused",
     snapshot: {
@@ -756,7 +762,7 @@ function replayedEmptyQuota(emptyQuota: MuseEmptyQuota): MuseReading {
         emptyQuota.untrustedWindowIds.length > 0
           ? { untrustedWindowIds: [...emptyQuota.untrustedWindowIds] }
           : {}),
-        sourcesTried: [],
+        sourcesTried: pingSources,
       },
       attempts: [],
     },
@@ -883,6 +889,29 @@ function reusedReport(
   attempts: SourceAttempt[],
   sourcesTried: string[],
 ): ProviderQuota {
+  // If the cached reading came from the billed ping, keep disclosing it: carry
+  // the ping attempt and source forward so the replay still shows the metered
+  // fallback in `--full` rather than hiding it behind the cache row. The cache
+  // persists `sourcesTried` but not `attempts`, so the source list is the
+  // durable signal that the ping produced this reading.
+  const snapshotPinged =
+    snapshot.state.sourcesTried?.includes(MUSE_USAGE_PING_SOURCE) === true;
+  // A pinged snapshot with windows is a ping success; a pinged snapshot with no
+  // window is the empty/failed ping replayed from its ledger marker.
+  const pingAttempt =
+    snapshot.windows.length > 0
+      ? { source: MUSE_USAGE_PING_SOURCE, status: "success" as const }
+      : {
+          source: MUSE_USAGE_PING_SOURCE,
+          status: "failed" as const,
+          error: "muse_usage_ping_failed",
+        };
+  const reportedAttempts = snapshotPinged
+    ? [...attempts, pingAttempt]
+    : attempts;
+  const reportedSources = snapshotPinged
+    ? [...sourcesTried, MUSE_USAGE_PING_SOURCE, "cache"]
+    : [...sourcesTried, "cache"];
   return {
     provider: "muse",
     label: LABEL,
@@ -899,9 +928,9 @@ function reusedReport(
       ...(snapshot.state.untrustedWindowIds
         ? { untrustedWindowIds: snapshot.state.untrustedWindowIds }
         : {}),
-      sourcesTried: [...sourcesTried, "cache"],
+      sourcesTried: reportedSources,
     },
-    attempts,
+    attempts: reportedAttempts,
   };
 }
 
@@ -1431,6 +1460,15 @@ export function normalizeMusePayload(
     // Omitted or null means the vendor supplied no windows. A present
     // non-object is untrusted because it cannot be read as usage.
     if (root.subs_usage != null) result.untrustedWindowIds.push("subs_usage");
+    return result;
+  }
+
+  // A present usage object that names neither recognized window is an
+  // unrecognized shape, not the established omitted/null empty reading: mark
+  // it untrusted so it is not mistaken for "no usage" and does not trigger the
+  // billed usage ping.
+  if (!Object.hasOwn(usage, "window") && !Object.hasOwn(usage, "weekly")) {
+    result.untrustedWindowIds.push("subs_usage");
     return result;
   }
 
