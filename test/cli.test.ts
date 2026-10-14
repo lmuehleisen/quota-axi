@@ -2480,7 +2480,82 @@ describe("default TOON decision blocks", () => {
       "rate_limited",
       "Kimi rate limited retry after 2026-07-06T19:10:00Z",
     ]);
-    expect(kinds).toContainEqual(["untrusted_windows", "unparsed_limit_2"]);
+    expect(kinds).toContainEqual(["unresolved_windows", "unparsed_limit_2"]);
+    const full = await capture(["--provider", "cursor,kimi", "--full"]);
+    expect(
+      toonRows(full, "attention").map((row) => [row[2], row[3]]),
+    ).toContainEqual(["untrusted_windows", "unparsed_limit_2"]);
+  });
+
+  it("keeps partial quota and usable auth visible without duplicate generic rows", async () => {
+    useTempCache();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-22T12:00:00.000Z"));
+    const quota = freshDevinQuota();
+    quota.windows[0].percentRemaining = 0;
+    quota.windows[0].percentUsed = 100;
+    quota.state.untrustedWindowIds = ["daily"];
+    PROVIDERS.devin = providerWithQuota(quota);
+
+    const compact = await capture(["--provider", "devin"]);
+    expect(toonRows(compact, "quota")).toEqual([]);
+    expect(toonRows(compact, "attention")).toEqual([
+      ["devin", "all", "unresolved_windows", "daily", "none"],
+      [
+        "devin",
+        "included_quota",
+        "headroom_unknown",
+        "weekly + daily (auth usable)",
+        "none",
+      ],
+    ]);
+
+    const full = await capture(["--provider", "devin", "--full"]);
+    expect(toonRows(full, "attention")).toContainEqual([
+      "devin",
+      "all",
+      "untrusted_windows",
+      "daily",
+      "none",
+    ]);
+    expect(full).not.toContain(",no_quota,");
+    const json = JSON.parse(
+      await capture(["--provider", "devin", "--json"]),
+    ) as QuotaAxiResponse;
+    expect(json.providers[0].state).toMatchObject({
+      authStatus: "usable",
+      untrustedWindowIds: ["daily"],
+    });
+    expect(json.providers[0].windows[0].percentRemaining).toBe(0);
+    expect(json.providers[0].quotaSemantics).toMatchObject({
+      status: "partial",
+      unresolvedWindowIds: ["daily"],
+      effectiveAvailability: [{ status: "unknown" }],
+    });
+  });
+
+  it("keeps untrusted windows not already named as unresolved in compact TOON", async () => {
+    useTempCache();
+    const quota = cursorWithUnfamiliarWindow();
+    quota.state.untrustedWindowIds = ["new_pool", "unparsed_limit_2"];
+    PROVIDERS.cursor = providerWithQuota(quota);
+
+    const compact = await capture(["--provider", "cursor"]);
+    const full = await capture(["--provider", "cursor", "--full"]);
+    expect(toonRows(compact, "attention")).toContainEqual([
+      "cursor",
+      "all",
+      "untrusted_windows",
+      "unparsed_limit_2",
+      "none",
+    ]);
+    expect(toonRows(full, "attention")).toContainEqual([
+      "cursor",
+      "all",
+      "untrusted_windows",
+      "new_pool + unparsed_limit_2",
+      "none",
+    ]);
   });
 
   it("drops the audit blocks and the duplicate selection block", async () => {
