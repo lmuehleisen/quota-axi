@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { withQuotaSemantics } from "../src/interpretation.js";
+import { renderQuotaToon } from "../src/render.js";
 import {
   SELECTION_SCALAR_KEY,
   type ProviderQuota,
@@ -624,6 +625,132 @@ describe("quota semantics", () => {
       runway: expect.objectContaining({ status: "exhausted_now" }),
     });
     expect(model?.boundConflict).toBeUndefined();
+  });
+
+  it("reports a Codex Business spend-control cap as a known all_models scope", () => {
+    const result = withQuotaSemantics(
+      provider("codex", [
+        window("spend_control", "credits", 99.85, {
+          resetsAt: "2026-11-01T00:00:00.000Z",
+          limitCredits: 72000,
+          usedCredits: 109.38,
+          remainingCredits: 71890.62,
+          creditUnit: "credit",
+        }),
+      ]),
+      GENERATED_AT,
+    );
+
+    expect(result.quotaSemantics?.status).toBe("known");
+    expect(result.quotaSemantics?.effectiveAvailability).toContainEqual(
+      expect.objectContaining({
+        scope: "all_models",
+        status: "known",
+        effectivePercentRemaining: 99.85,
+        boundedBy: ["spend_control"],
+        limitingWindowIds: ["spend_control"],
+      }),
+    );
+    expect(
+      renderQuotaToon(
+        { generatedAt: GENERATED_AT, schemaVersion: 5, providers: [result] },
+        "quota-axi",
+        false,
+      ),
+    ).toContain("codex,all_models,99.85,");
+  });
+
+  it("marks a Codex Business spend-control cap exhausted when reached is true", () => {
+    const result = withQuotaSemantics(
+      provider("codex", [
+        window("spend_control", "credits", 0, {
+          resetsAt: "2026-11-01T00:00:00.000Z",
+          limitCredits: 72000,
+          usedCredits: 72000,
+          remainingCredits: 0,
+          creditUnit: "credit",
+        }),
+      ]),
+      GENERATED_AT,
+    );
+
+    expect(result.quotaSemantics?.effectiveAvailability).toContainEqual(
+      expect.objectContaining({
+        scope: "all_models",
+        status: "known",
+        effectivePercentRemaining: 0,
+      }),
+    );
+    expect(
+      renderQuotaToon(
+        { generatedAt: GENERATED_AT, schemaVersion: 5, providers: [result] },
+        "quota-axi",
+        false,
+      ),
+    ).toContain("exhaustion[1]");
+  });
+
+  it.each([99, 10, 0])(
+    "keeps included Codex headroom independent of a cap at %s%%",
+    (creditRemaining) => {
+      const result = withQuotaSemantics(
+        provider("codex", [
+          window("five_hour", "session", 80, {
+            resetsAt: offsetFromGeneratedAt(9_000),
+          }),
+          window("spend_control", "credits", creditRemaining, {
+            resetsAt: "2026-11-01T00:00:00.000Z",
+          }),
+        ]),
+        GENERATED_AT,
+      );
+
+      expect(result.quotaSemantics?.status).toBe("known");
+      const all = result.quotaSemantics?.effectiveAvailability.find(
+        (s) => s.scope === "all_models",
+      );
+      expect(all).toMatchObject({
+        status: "known",
+        effectivePercentRemaining: 80,
+        boundedBy: ["five_hour"],
+        limitingWindowIds: ["five_hour"],
+      });
+      expect(result.windows.map(({ id }) => id)).toEqual([
+        "five_hour",
+        "spend_control",
+      ]);
+      const report = renderQuotaToon(
+        { generatedAt: GENERATED_AT, schemaVersion: 5, providers: [result] },
+        "quota-axi",
+        false,
+      );
+      expect(report).toContain("codex,all_models,80,");
+      expect(report).toContain("exhaustion[0]:");
+    },
+  );
+
+  it("does not inherit a reached credit cap into named or code-review limits", () => {
+    const result = withQuotaSemantics(
+      provider("codex", [
+        window("model:preview:5h", "model", 60),
+        window("code_review_weekly", "weekly", 70),
+        window("spend_control", "credits", 0),
+      ]),
+      GENERATED_AT,
+    );
+    expect(result.quotaSemantics?.status).toBe("known");
+    expect(result.quotaSemantics?.effectiveAvailability).toMatchObject([
+      {
+        scope: "code_review",
+        effectivePercentRemaining: 70,
+        boundedBy: ["code_review_weekly"],
+      },
+      {
+        scope: "model:preview",
+        effectivePercentRemaining: 60,
+        boundedBy: ["model:preview:5h"],
+      },
+    ]);
   });
 
   // The bound conflict is opted into per provider. Claude's account 5h/7d bound
