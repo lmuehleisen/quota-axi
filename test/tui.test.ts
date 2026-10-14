@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   detectTuiColorDepth,
@@ -1275,6 +1276,162 @@ describe("color handling", () => {
     ).toContain("claude · openai-codex-work · kun@example.com");
   });
 
+  const THEME_SGR = {
+    dark: {
+      claude: "\x1b[1;38;2;250;179;135m",
+      ok: "\x1b[1;38;2;166;227;161m72%\x1b[0m",
+      warn: "\x1b[1;38;2;249;226;175mempty in 1h 0m\x1b[0m",
+      crit: "\x1b[1;38;2;243;139;168m✗ exhausted now\x1b[0m",
+    },
+    light: {
+      claude: "\x1b[1;38;2;228;82;0m",
+      ok: "\x1b[1;38;2;52;150;30m72%\x1b[0m",
+      warn: "\x1b[1;38;2;188;108;0mempty in 1h 0m\x1b[0m",
+      crit: "\x1b[1;38;2;200;8;50m✗ exhausted now\x1b[0m",
+    },
+  } as const;
+
+  function projectedResponse(status: "projected_exhaustion" | "exhausted_now") {
+    const response = fixtureResponse();
+    const availability =
+      response.providers[0].quotaSemantics?.effectiveAvailability[0];
+    if (!availability) throw new Error("fixture has no availability");
+    availability.runway = {
+      status,
+      usableRunwaySeconds: status === "exhausted_now" ? 0 : 3600,
+      limitingWindowId: "seven_day",
+      projectionConfidence: "established",
+    };
+    return response;
+  }
+
+  it.each(["dark", "light"] as const)(
+    "renders the %s truecolor palette with the same glyph skeleton",
+    (theme) => {
+      const options = {
+        timeZone: "America/Los_Angeles",
+        colorDepth: "truecolor",
+        theme,
+      } as const;
+      const plain = renderQuotaTui(fixtureResponse(), {
+        timeZone: "America/Los_Angeles",
+      });
+      const colored = renderQuotaTui(fixtureResponse(), options);
+      expect(colored).toContain(THEME_SGR[theme].claude);
+      expect(stripAnsi(colored)).toBe(plain);
+      const projected = renderQuotaTui(
+        projectedResponse("projected_exhaustion"),
+        options,
+      );
+      expect(projected).toContain(THEME_SGR[theme].ok);
+      expect(projected).toContain(THEME_SGR[theme].warn);
+      expect(
+        renderQuotaTui(projectedResponse("exhausted_now"), options),
+      ).toContain(THEME_SGR[theme].crit);
+    },
+  );
+
+  // Default frame bytes captured from main at 02396ae, before theme support.
+  it.each([
+    [
+      "none",
+      "c5a7c98a02940a76853b3867abe4dbc1d58805cfe03da7472a7013022471c48d",
+    ],
+    ["16", "f5b60c461ccfb6679ccfd343bca23fe45ea10cc838cbafaf25cfd943bf02dcff"],
+    ["256", "e667f782fbd6a88be9f688a59381caa21eef4e122a44f53dbbb51e8fd6833d4c"],
+    [
+      "truecolor",
+      "b41b477f9a2c191b2c484796e2ef5e165ef6bf66b20e3ce6791279a7e19b52b0",
+    ],
+  ] as const)(
+    "keeps the default %s frame byte-identical to main",
+    (colorDepth, digest) => {
+      const output = renderQuotaTui(fixtureResponse(), {
+        timeZone: "America/Los_Angeles",
+        colorDepth,
+      });
+      expect(createHash("sha256").update(output).digest("hex")).toBe(digest);
+    },
+  );
+
+  it("defaults to the dark palette when no theme is given", () => {
+    const options = {
+      timeZone: "America/Los_Angeles",
+      colorDepth: "truecolor",
+    } as const;
+    expect(renderQuotaTui(fixtureResponse(), options)).toBe(
+      renderQuotaTui(fixtureResponse(), { ...options, theme: "dark" }),
+    );
+    expect(renderTuiHintLine("hint", options)).toBe(
+      renderTuiHintLine("hint", { ...options, theme: "dark" }),
+    );
+  });
+
+  it("derives the 256-color palette from the selected theme's rgb table", () => {
+    const options = {
+      timeZone: "America/Los_Angeles",
+      colorDepth: "256",
+    } as const;
+    const dark = renderQuotaTui(fixtureResponse(), {
+      ...options,
+      theme: "dark",
+    });
+    const light = renderQuotaTui(fixtureResponse(), {
+      ...options,
+      theme: "light",
+    });
+    // Mocha claude peach (250,179,135) -> 223; Latte peach (228,82,0) -> 202.
+    expect(dark).toContain("\x1b[1;38;5;223m");
+    expect(dark).not.toContain("\x1b[1;38;5;202m");
+    expect(light).toContain("\x1b[1;38;5;202m");
+    expect(light).not.toContain("\x1b[1;38;5;223m");
+    expect(stripAnsi(dark)).toBe(stripAnsi(light));
+  });
+
+  it.each([
+    ["commandcode", [52, 150, 30]],
+    ["minimax", [215, 70, 0]],
+    ["mimo", [4, 140, 190]],
+    ["deepseek", [40, 110, 220]],
+    ["openrouter", [136, 57, 239]],
+    ["elevenlabs", [190, 70, 165]],
+    ["devin", [20, 130, 160]],
+    ["muse", [90, 80, 210]],
+    ["higgsfield", [200, 80, 20]],
+  ] as const)("uses a Latte accent for %s", (provider, rgb) => {
+    const response: QuotaAxiResponse = {
+      ...fixtureResponse(),
+      providers: [{ ...claudeProvider(), provider, label: provider }],
+    };
+    const latte = renderQuotaTui(response, {
+      colorDepth: "truecolor",
+      theme: "light",
+    });
+    const mocha = renderQuotaTui(response, {
+      colorDepth: "truecolor",
+      theme: "dark",
+    });
+    const accent = `\x1b[1;38;2;${rgb.join(";")}m`;
+    expect(latte).toContain(accent);
+    expect(mocha).not.toContain(accent);
+  });
+
+  it("keeps the 16-color path identical across themes", () => {
+    const options = {
+      timeZone: "America/Los_Angeles",
+      colorDepth: "16",
+    } as const;
+    expect(
+      renderQuotaTui(fixtureResponse(), { ...options, theme: "light" }),
+    ).toBe(renderQuotaTui(fixtureResponse(), { ...options, theme: "dark" }));
+  });
+
+  it("colors the light-theme hint line with the Latte dim tone", () => {
+    expect(
+      renderTuiHintLine("hint", { colorDepth: "truecolor", theme: "light" }),
+    ).toContain("\x1b[38;2;124;127;147m");
+  });
+
   it("detects color depth from the environment", () => {
     expect(detectTuiColorDepth({}, false)).toBe("none");
     expect(detectTuiColorDepth({ NO_COLOR: "" }, true)).toBe("none");
@@ -1509,6 +1666,21 @@ describe("providers that are not set up", () => {
     );
   });
 
+  it("names a folded account lane by its label instead of its account key", () => {
+    const work = { ...notSetUp("claude"), accountKey: "profile:1a2b" };
+    const lines = frame(
+      {
+        generatedAt: GENERATED_AT,
+        schemaVersion: 6,
+        providers: [work, notSetUp("zai")],
+      },
+      { accountLabels: ["work", undefined] },
+    );
+
+    expect(findLine(lines, "○ not set up")).toContain("claude/work · zai ");
+    expect(lines.join("\n")).not.toContain("profile:1a2b");
+  });
+
   it("truncates a folded name too long for the footer instead of overflowing", () => {
     const long = {
       ...notSetUp("codex"),
@@ -1542,5 +1714,65 @@ describe("providers that are not set up", () => {
     expect(findLine(lines, "  alibaba · tried")).toContain(
       "bl-cli (skipped: credentials_missing)",
     );
+  });
+});
+
+describe("account labels", () => {
+  function lanes(): QuotaAxiResponse {
+    return {
+      generatedAt: GENERATED_AT,
+      schemaVersion: 6,
+      providers: [
+        { ...claudeProvider(), accountKey: "profile:aaaa" },
+        { ...claudeProvider(), accountKey: "profile:bbbb" },
+        {
+          ...signedOutProvider("kimi", "Claude sign-in required"),
+          provider: "claude",
+          label: "Claude",
+          accountKey: "profile:cccc",
+        },
+      ],
+    };
+  }
+
+  function frame(accountLabels?: readonly (string | undefined)[]): string[] {
+    return renderQuotaTui(lanes(), {
+      columns: 120,
+      timeZone: "America/Los_Angeles",
+      ...(accountLabels ? { accountLabels } : {}),
+    }).split("\n");
+  }
+
+  it("names a labelled lane in its card title and keeps its account line", () => {
+    const lines = frame(["posam", undefined, "personal"]);
+
+    expect(findCardLine(lines, 0, "╭─")).toMatch(
+      /^╭─ ● claude · posam ─+ max · oauth ─╮$/,
+    );
+    expect(findCardLine(lines, 0, "account profile:aaaa")).toBeDefined();
+    expect(findCardLine(lines, 1, "╭─")).toMatch(/^╭─ ● claude ─+ max/);
+    expect(findLine(lines, "○ claude · personal")).toMatch(
+      /╭─ ○ claude · personal ─+ signed out ─╮/,
+    );
+  });
+
+  it("draws exactly the unlabelled report when no lane has a usable label", () => {
+    const baseline = frame();
+
+    expect(frame([undefined, undefined, undefined])).toEqual(baseline);
+    expect(frame(["", "   ", "\u0007"])).toEqual(baseline);
+  });
+
+  it("fits a long label with terminal controls inside the card", () => {
+    const label = `\x1b[31m${"w".repeat(80)}`;
+    const lines = frame([label, label, label]);
+    const title = findCardLine(lines, 0, "╭─");
+
+    expect(title).toMatch(/^╭─ ● claude · \[31mw+… ─ max · oa… ─╮$/);
+    expect(lines.join("\n")).not.toContain("\x1b");
+    for (const line of lines) {
+      expect(displayColumns(line)).toBeLessThanOrEqual(120);
+    }
+    expect(displayColumns(title)).toBe(CARD_COLUMNS);
   });
 });

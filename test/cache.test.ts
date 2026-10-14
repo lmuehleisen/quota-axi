@@ -20,6 +20,7 @@ import {
   readCachedProvider,
   readReusableProviders,
   retireCodexAccount,
+  stampClaudeReadingContext,
   stampReadingInputs,
   writeCachedProviders,
   stampCodexStoredAccountId,
@@ -288,6 +289,14 @@ describe("quota cache", () => {
     const codex = quota("codex", 20);
     codex.windows = [
       {
+        id: "spend_control",
+        label: "workspace credit cap",
+        kind: "credits",
+        percentUsed: 0.15191666666666667,
+        percentRemaining: 99.84808333333334,
+        resetsAt: "2026-11-01T00:00:00.000Z",
+      },
+      {
         id: "five_hour",
         label: "session",
         kind: "session",
@@ -315,6 +324,7 @@ describe("quota cache", () => {
     writeCachedProviders([codex]);
 
     expect(readCachedProvider("codex")?.windows.map(({ id }) => id)).toEqual([
+      "spend_control",
       "five_hour",
       "weekly",
       "weekly_2",
@@ -922,6 +932,28 @@ oauth_host = "https://auth.kimi.ai"
     ]);
 
     expect(readCachedProvider("alibaba")).toBeUndefined();
+  });
+
+  it("clears every Claude slot of one profile context after a fresh empty reading", () => {
+    useTempCache();
+    const contextId = claudeCredentialContextId();
+    const sibling = "f".repeat(64);
+    const siblingLane = { ...quota("claude", 30), accountKey: "profile:other" };
+    stampClaudeReadingContext(siblingLane, sibling);
+    writeCachedProviders([
+      quota("claude", 10),
+      { ...quota("claude", 20), accountKey: "profile:lane" },
+      siblingLane,
+    ]);
+
+    writeCachedProviders([
+      { ...quotaWithoutWindows("claude"), accountKey: "profile:lane" },
+    ]);
+
+    expect(readCachedClaudeProvider(contextId)).toBeUndefined();
+    expect(readCachedClaudeProvider(sibling)).toMatchObject({
+      windows: [{ percentUsed: 30 }],
+    });
   });
 
   it("does not replace a context-scoped snapshot when the current reading has no identity", () => {

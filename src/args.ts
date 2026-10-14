@@ -1,6 +1,7 @@
 import { AxiError } from "axi-sdk-js";
 import { MODEL_CATALOG_PROVIDER_IDS } from "./models.js";
 import { parseProviders } from "./providers/index.js";
+import { TUI_THEME_SETTINGS, type TuiThemeSetting } from "./tui.js";
 import {
   PROVIDER_IDS,
   type IntelligenceBucket,
@@ -40,6 +41,8 @@ export type QuotaFlags = {
    * `0` always asks. Absent, the caller falls back to {@link MAX_AGE_ENV}.
    */
   maxAgeSeconds?: number;
+  /** `--tui` palette selection; unset defers to `QUOTA_AXI_THEME`, then `dark`. */
+  theme?: TuiThemeSetting;
 };
 
 /** Refresh bounds: fast enough to feel live, slow enough to stay polite. */
@@ -128,6 +131,7 @@ function parseCommonFlags(
   let all = false;
   let refreshSeconds: number | undefined;
   let maxAgeSeconds: number | undefined;
+  let theme: TuiThemeSetting | undefined;
   let allowKeychainPrompt = false;
   let allowClaudeInference = false;
   let noCredentialRefresh = false;
@@ -176,6 +180,15 @@ function parseCommonFlags(
     }
     if (arg.startsWith("--max-age=")) {
       maxAgeSeconds = parseMaxAgeValue(arg.slice("--max-age=".length));
+      continue;
+    }
+    if (arg === "--theme") {
+      theme = parseThemeValue(args[index + 1], "--theme");
+      index++;
+      continue;
+    }
+    if (arg.startsWith("--theme=")) {
+      theme = parseThemeValue(arg.slice("--theme=".length), "--theme");
       continue;
     }
     if (arg === "--allow-keychain-prompt") {
@@ -262,6 +275,13 @@ function parseCommonFlags(
       ["Run `quota-axi --tui --all` to draw every provider as a full card"],
     );
   }
+  if (theme !== undefined && !tui) {
+    throw new AxiError(
+      "--theme is only supported with --tui",
+      "VALIDATION_ERROR",
+      ["Run `quota-axi --tui --theme light` for the human report"],
+    );
+  }
 
   return {
     providers: parseProviderScope(providerValues, defaultProviders),
@@ -277,6 +297,7 @@ function parseCommonFlags(
     profileOnly,
     ...(refreshSeconds !== undefined ? { refreshSeconds } : {}),
     ...(maxAgeSeconds !== undefined ? { maxAgeSeconds } : {}),
+    ...(theme !== undefined ? { theme } : {}),
     ...(intelligence ? { intelligence } : {}),
     ...(sort ? { sort } : {}),
   };
@@ -300,6 +321,26 @@ function parseDurationSeconds(value: string | undefined): number | undefined {
   if (!match) return undefined;
   const multiplier = match[2] === "h" ? 3600 : match[2] === "m" ? 60 : 1;
   return Number(match[1]) * multiplier;
+}
+
+/**
+ * Validate a `--tui` theme setting from the flag or `QUOTA_AXI_THEME`. An
+ * unrecognised value is a usage error, never a silent fallback.
+ */
+export function parseThemeValue(
+  value: string | undefined,
+  source: "--theme" | "QUOTA_AXI_THEME",
+): TuiThemeSetting {
+  const trimmed = value?.trim() ?? "";
+  const match = TUI_THEME_SETTINGS.find((candidate) => candidate === trimmed);
+  if (match !== undefined) return match;
+  throw new AxiError(
+    `${source} requires light, dark, or system`,
+    "VALIDATION_ERROR",
+    source === "--theme"
+      ? ["Pass --theme=... if the value begins with --"]
+      : ["Unset QUOTA_AXI_THEME or pass --theme to override it"],
+  );
 }
 
 /** Accept a whole-unit duration (`45s`, `5m`, `1h`) or bare seconds. */
