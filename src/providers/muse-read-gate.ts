@@ -38,6 +38,12 @@ export type MuseEmptyQuota = {
   refreshedAt: number;
   plan?: string;
   untrustedWindowIds?: readonly string[];
+  /**
+   * True when the billed usage-ping fallback was fired for this empty reading
+   * (it produced no window, or failed). Lets interval replay keep disclosing
+   * the metered `muse:usage-ping` attempt in `--full`. Never a secret.
+   */
+  pinged?: boolean;
 };
 
 export type MuseKeyRead = {
@@ -231,6 +237,7 @@ function copyEmptyQuota(
     refreshedAt: empty.refreshedAt,
     ...(plan ? { plan } : {}),
     ...(untrustedWindowIds ? { untrustedWindowIds } : {}),
+    ...(empty.pinged ? { pinged: true } : {}),
   };
 }
 
@@ -241,6 +248,7 @@ function serializeEmptyQuota(empty: MuseEmptyQuota): Record<string, unknown> {
     ...(empty.untrustedWindowIds && empty.untrustedWindowIds.length > 0
       ? { untrustedWindowIds: [...empty.untrustedWindowIds] }
       : {}),
+    ...(empty.pinged ? { pinged: true } : {}),
   };
 }
 
@@ -258,6 +266,7 @@ function parseEmptyQuota(raw: unknown): MuseEmptyQuota | undefined {
     refreshedAt,
     ...(plan ? { plan } : {}),
     ...(untrustedWindowIds ? { untrustedWindowIds } : {}),
+    ...(entry.pinged === true ? { pinged: true } : {}),
   };
 }
 
