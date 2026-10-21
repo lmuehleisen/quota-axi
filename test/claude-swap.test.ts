@@ -170,7 +170,7 @@ function personal(): Record<string, unknown> {
     number: 1,
     email: "personal@example.invalid",
     organizationName: "Personal Org",
-    organizationUuid: "00000000-0000-4000-8000-000000000001",
+    organizationUuid: "fixture-org-personal",
     active: true,
     usageStatus: "ok",
     usage: {
@@ -186,7 +186,7 @@ function team(): Record<string, unknown> {
     number: 2,
     email: "team@example.invalid",
     organizationName: "Team Org",
-    organizationUuid: "00000000-0000-4000-8000-000000000002",
+    organizationUuid: "fixture-org-team",
     active: false,
     usageStatus: "ok",
     usage: {
