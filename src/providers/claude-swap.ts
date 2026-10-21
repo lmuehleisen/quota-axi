@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, openSync, rmSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { findCommandPath } from "../lib/process.js";
@@ -20,7 +19,112 @@ const ARGS = ["list", "--json"] as const;
 const WAIT_MS = 30_000;
 const OUTPUT_LIMIT_BYTES = 1_048_576;
 export const CLAUDE_SWAP_EXECUTABLE_REMEDY = "pipx install claude-swap";
-const pendingOutputDirectories = new Set<string>();
+// This detached collector keeps draining cswap after a timeout while storing
+// no more than the output limit, so the refresh-capable child is not blocked.
+const OUTPUT_RUNNER = String.raw`
+import { spawn } from "node:child_process";
+import { closeSync, openSync, rmSync, writeSync } from "node:fs";
+import { join } from "node:path";
+
+const [executable, outputDirectory, argsJson, limitText] = process.argv.slice(-4);
+const outputPath = join(outputDirectory, "stdout");
+const limit = Number(limitText);
+let outputFd;
+let written = 0;
+let overflow = false;
+let captureFailed = false;
+let disconnected = false;
+let finished = false;
+let child;
+
+function closeOutput() {
+  if (outputFd === undefined) return;
+  try {
+    closeSync(outputFd);
+  } catch {
+    // Closing a temporary output file is best effort.
+  }
+  outputFd = undefined;
+}
+
+function cleanup() {
+  closeOutput();
+  try {
+    rmSync(outputDirectory, { recursive: true, force: true });
+  } catch {
+    // Temporary output cleanup is best effort.
+  }
+}
+
+function report(result) {
+  finished = true;
+  closeOutput();
+  if (disconnected) {
+    cleanup();
+    return;
+  }
+  process.stdout.write(JSON.stringify(result) + "\n", (error) => {
+    if (error || disconnected) cleanup();
+  });
+}
+
+process.stdin.on("data", (data) => {
+  if (data.toString().includes("ack")) disconnected = true;
+});
+process.stdin.on("end", () => {
+  disconnected = true;
+  if (finished) cleanup();
+});
+process.stdin.resume();
+process.stdout.on("error", () => {
+  disconnected = true;
+  if (finished) cleanup();
+});
+
+try {
+  outputFd = openSync(outputPath, "wx", 0o600);
+} catch {
+  report({ error: true });
+}
+
+if (outputFd !== undefined) {
+  try {
+    child = spawn(executable, JSON.parse(argsJson), {
+      stdio: ["ignore", "pipe", "ignore"],
+      detached: true,
+      windowsHide: true,
+      env: process.env,
+    });
+  } catch {
+    report({ error: true });
+  }
+  if (child) {
+    child.stdout.on("data", (chunk) => {
+      if (overflow || captureFailed) return;
+      const remaining = limit - written;
+      const allowed = Math.min(remaining, chunk.length);
+      try {
+        let offset = 0;
+        while (offset < allowed) {
+          const count = writeSync(outputFd, chunk, offset, allowed - offset);
+          if (count <= 0) throw new Error("output_write_failed");
+          offset += count;
+        }
+        written += allowed;
+        if (allowed < chunk.length) overflow = true;
+      } catch {
+        captureFailed = true;
+      }
+    });
+    child.on("error", () => {
+      captureFailed = true;
+    });
+    child.on("close", (code) => {
+      report({ code, overflow, captureFailed });
+    });
+  }
+}
+`;
 const CHILD_ENVIRONMENT_KEYS = new Set([
   "HOME",
   "PATH",
@@ -126,77 +230,102 @@ async function runCswapList(): Promise<string> {
     [".cmd", ".bat"].includes(win32.extname(executable).toLowerCase())
   )
     throw new Error("claude_swap_unavailable", {
-      cause:
-        executable === undefined ? undefined : CLAUDE_SWAP_EXECUTABLE_REMEDY,
+      cause: CLAUDE_SWAP_EXECUTABLE_REMEDY,
     });
   const childEnvironment = claudeSwapEnvironment();
   let outputDirectory: string;
   try {
     outputDirectory = await mkdtemp(join(tmpdir(), "quota-axi-cswap-"));
-    trackOutput(outputDirectory);
   } catch {
     throw new Error("claude_swap_unavailable");
   }
   const outputPath = join(outputDirectory, "stdout");
-  let outputFd: number;
-  try {
-    outputFd = openSync(outputPath, "wx", 0o600);
-  } catch {
-    await removeOutput(outputDirectory);
-    throw new Error("claude_swap_unavailable");
-  }
   let child: ChildProcess;
   try {
-    child = spawn(executable, [...ARGS], {
-      stdio: ["ignore", outputFd, "ignore"],
-      detached: true,
-      env: childEnvironment,
-    });
+    child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        OUTPUT_RUNNER,
+        executable,
+        outputDirectory,
+        JSON.stringify(ARGS),
+        String(OUTPUT_LIMIT_BYTES),
+      ],
+      {
+        stdio: ["pipe", "pipe", "ignore"],
+        detached: true,
+        windowsHide: true,
+        env: childEnvironment,
+      },
+    );
   } catch {
-    closeSync(outputFd);
     await removeOutput(outputDirectory);
     throw new Error("claude_swap_spawn_failed");
   }
-  closeSync(outputFd);
   return new Promise((resolve, reject) => {
     let settled = false;
-    let cleanupStarted = false;
-    const cleanupAfterWalkAway = () => {
-      if (cleanupStarted) return;
-      cleanupStarted = true;
-      void removeOutput(outputDirectory);
-    };
     const walkAway = (error: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       child.unref();
+      child.stdin?.end();
+      child.stdout?.on("error", () => undefined);
+      child.stdout?.destroy();
       reject(new Error(error));
     };
     const timer = setTimeout(() => walkAway("claude_swap_timed_out"), WAIT_MS);
     child.on("error", () => {
       if (settled) {
-        cleanupAfterWalkAway();
         return;
       }
-      settled = true;
-      clearTimeout(timer);
-      void removeOutput(outputDirectory).then(() =>
-        reject(new Error("claude_swap_spawn_failed")),
-      );
+      void finish({ error: true });
     });
-    child.on("close", (code) => {
-      if (settled) {
-        cleanupAfterWalkAway();
+    child.stdout?.setEncoding("utf8");
+    let statusLine = "";
+    child.stdout?.on("data", (chunk: string) => {
+      statusLine += chunk;
+      const newline = statusLine.indexOf("\n");
+      if (newline < 0) {
+        if (statusLine.length > 1_024) void finish({ error: true });
         return;
       }
+      try {
+        void finish(JSON.parse(statusLine.slice(0, newline)) as RunnerResult);
+      } catch {
+        void finish({ error: true });
+      }
+    });
+    child.on("close", () => {
+      if (settled) return;
+      void finish({ error: true });
+    });
+
+    async function finish(result: RunnerResult): Promise<void> {
+      if (settled) return;
       settled = true;
       clearTimeout(timer);
-      void readCompletedOutput(outputPath, outputDirectory, code).then(
-        resolve,
-        reject,
-      );
-    });
+      try {
+        if (result.error || result.captureFailed)
+          throw new Error("claude_swap_spawn_failed");
+        if (result.code !== 0) throw new Error("claude_swap_exit_status");
+        if (result.overflow) throw new Error("claude_swap_output_too_large");
+        const output = await readFile(outputPath, "utf8");
+        child.stdin?.end("ack");
+        await removeOutput(outputDirectory);
+        resolve(output);
+      } catch (error) {
+        child.stdin?.end("ack");
+        await removeOutput(outputDirectory);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("claude_swap_spawn_failed"),
+        );
+      }
+    }
   });
 }
 
@@ -217,42 +346,18 @@ function claudeSwapEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
-async function readCompletedOutput(
-  outputPath: string,
-  outputDirectory: string,
-  exitCode: number | null,
-): Promise<string> {
-  try {
-    if (exitCode !== 0) throw new Error("claude_swap_exit_status");
-    if ((await stat(outputPath)).size > OUTPUT_LIMIT_BYTES)
-      throw new Error("claude_swap_output_too_large");
-    return await readFile(outputPath, "utf8");
-  } finally {
-    await removeOutput(outputDirectory);
-  }
-}
-
 async function removeOutput(outputDirectory: string): Promise<void> {
   await rm(outputDirectory, { recursive: true, force: true }).catch(
     () => undefined,
   );
-  pendingOutputDirectories.delete(outputDirectory);
-  if (pendingOutputDirectories.size === 0)
-    process.off("exit", removePendingOutputsSync);
 }
 
-function trackOutput(outputDirectory: string): void {
-  if (pendingOutputDirectories.size === 0)
-    process.once("exit", removePendingOutputsSync);
-  pendingOutputDirectories.add(outputDirectory);
-}
-
-function removePendingOutputsSync(): void {
-  for (const outputDirectory of pendingOutputDirectories) {
-    rmSync(outputDirectory, { recursive: true, force: true });
-  }
-  pendingOutputDirectories.clear();
-}
+type RunnerResult = {
+  code?: number | null;
+  overflow?: boolean;
+  captureFailed?: boolean;
+  error?: boolean;
+};
 
 function parseUsage(value: unknown): ClaudeSwapUsage | undefined {
   if (value === null) return undefined;

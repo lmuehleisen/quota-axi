@@ -502,6 +502,10 @@ describe.skipIf(process.platform === "win32")("claude-swap lanes", () => {
         windows: [],
         state: { status: "unavailable", error },
       });
+      if (error === "claude_swap_unavailable")
+        expect(report.providers[0].state.remedyCommand).toBe(
+          "pipx install claude-swap",
+        );
       expect(fetch).not.toHaveBeenCalled();
     },
   );

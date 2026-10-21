@@ -337,6 +337,7 @@ function claudeSwapQuota(account: ClaudeSwapAccount): ProviderQuota {
     const reading = successProvider({
       provider: "claude",
       label: "Claude",
+      // The multi-account store lives outside quota-axi's traced inputs.
       source: "cli",
       account: identity,
       windows: [
