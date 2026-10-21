@@ -368,6 +368,18 @@ describe.skipIf(process.platform === "win32")("claude-swap lanes", () => {
     expect(existsSync(ran)).toBe(false);
   });
 
+  it("keeps profile-only reads on the selected file", async () => {
+    cswap(list());
+    vi.stubEnv("CLAUDE_CONFIG_DIR", join(home, ".claude"));
+    vi.stubEnv("QUOTA_AXI_CLAUDE_SWAP", "1");
+
+    const report = await quota(["--profile-only", "--json"]);
+
+    expectNativeLane(report);
+    expect(fetch).toHaveBeenCalled();
+    expect(existsSync(ran)).toBe(false);
+  });
+
   it("rejects oversized completed output after letting cswap finish", async () => {
     const done = join(home, "cswap-finished");
     oversizedCswap(done);
