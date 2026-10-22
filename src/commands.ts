@@ -37,6 +37,7 @@ import {
   inspectAccountAuth,
 } from "./providers/accounts.js";
 import { failedProvider } from "./providers/common.js";
+import { claudeSwapEnabled } from "./providers/claude-swap.js";
 import { PROVIDERS } from "./providers/index.js";
 import {
   quotaJsonReport,
@@ -191,12 +192,8 @@ async function quotaTuiReport(
       providerPresence(provider, PROVIDERS[provider.provider]),
     );
     notSetUp = presence.filter((entry) => entry === "absent").length;
-    // Redaction also removes the locator a lane label is keyed by.
-    const accountLabels = response.providers.map((provider) =>
-      provider.accountLocator
-        ? accountLabel(provider.accountLocator.path)
-        : undefined,
-    );
+    // Redaction also removes the locator a lane label can be keyed by.
+    const accountLabels = response.providers.map(accountLabel);
     return renderQuotaTui(redactedResponse(response, flags.full), {
       ...terminal(),
       full: flags.full,
@@ -447,7 +444,8 @@ export async function fetchQuota(
       [`Point ${SNAPSHOT_ENV} at a quota-axi cache file, or unset it`],
     );
   }
-  if (!snapshot) validateClaudeProfiles(providers, options);
+  if (!snapshot && !claudeSwapEnabled())
+    validateClaudeProfiles(providers, options);
   const writesCache = options.credentialMode !== "profile-only" && !snapshot;
   // Providers a lock holder already cached, so the report-wide write below
   // does not stamp them a second time

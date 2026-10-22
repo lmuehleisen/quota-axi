@@ -34,6 +34,13 @@ import {
   discoverClaudeProfiles,
   type ClaudeProfile,
 } from "./claude-accounts.js";
+import {
+  CLAUDE_SWAP_EXECUTABLE_REMEDY,
+  CLAUDE_SWAP_SOURCE,
+  claudeSwapEnabled,
+  readClaudeSwapAccounts,
+  type ClaudeSwapAccount,
+} from "./claude-swap.js";
 import { execFileText } from "../lib/process.js";
 import { listRunningCommandLines } from "../lib/running-processes.js";
 import { redactSecret } from "../lib/secret.js";
@@ -218,9 +225,50 @@ const SELECTED_LANE: ClaudeLane = { envEligible: true };
  * read-only. Its Keychain value is read only under the same per-item grant
  * marker or `--allow-keychain-prompt` as today.
  */
-async function discoverClaudeAccounts(): Promise<
-  ProviderAccount[] | undefined
-> {
+async function discoverClaudeAccounts(
+  options?: ProviderOptions,
+  operation?: "quota" | "auth",
+): Promise<ProviderAccount[] | undefined> {
+  if (claudeSwapEnabled()) {
+    // This multi-account source can refresh its own credentials internally;
+    // quota-axi cannot bind that work to one rejected native token. Keep it
+    // opt-in, quota-only, and suppress the entire call when refresh is off.
+    if (!options || operation !== "quota") return undefined;
+    if (!options.refreshCredentials)
+      return [claudeSwapUnavailableAccount("claude_swap_refresh_disabled")];
+    let accounts: ClaudeSwapAccount[];
+    try {
+      accounts = await readClaudeSwapAccounts();
+    } catch (error) {
+      return [
+        claudeSwapUnavailableAccount(
+          claudeSwapReadError(error),
+          error instanceof Error &&
+            error.cause === CLAUDE_SWAP_EXECUTABLE_REMEDY
+            ? CLAUDE_SWAP_EXECUTABLE_REMEDY
+            : undefined,
+        ),
+      ];
+    }
+    return accounts.map(
+      (account): ProviderAccount => ({
+        accountKey: account.accountKey,
+        fetchQuota: async () => claudeSwapQuota(account),
+        inspectAuth: async () => ({
+          provider: "claude",
+          sources: [
+            account.usageStatus === "ok"
+              ? { source: CLAUDE_SWAP_SOURCE, status: "available" }
+              : {
+                  source: CLAUDE_SWAP_SOURCE,
+                  status: "error",
+                  error: claudeSwapError(account),
+                },
+          ],
+        }),
+      }),
+    );
+  }
   const listed = claudeListedProfiles();
   if (!listed) return undefined;
   const darwin = process.platform === "darwin";
@@ -269,6 +317,101 @@ async function discoverClaudeAccounts(): Promise<
         ),
     };
   });
+}
+
+/**
+ * One claude-swap account's reading. Its utilization and measurement time
+ * pass through Claude's normalizers; expired windows are dropped, and the
+ * unverified identity keeps lanes separate.
+ */
+function claudeSwapQuota(account: ClaudeSwapAccount): ProviderQuota {
+  const identity: ClaudeAccount = {
+    email: account.email,
+    organization: account.organization,
+    identityStatus: "unverified",
+  };
+  const usage = account.usageStatus === "ok" ? account.usage : undefined;
+  if (usage && account.fetchedAt) {
+    const window = (data: typeof usage.fiveHour) =>
+      data && { utilization: data.pct, resets_at: data.resetsAt };
+    const reading = successProvider({
+      provider: "claude",
+      label: "Claude",
+      // The multi-account store lives outside quota-axi's traced inputs.
+      source: "cli",
+      account: identity,
+      windows: [
+        normalizeWindow(
+          window(usage.fiveHour),
+          "five_hour",
+          "session",
+          "session",
+        ),
+        normalizeWindow(window(usage.sevenDay), "seven_day", "week", "weekly"),
+      ].filter((window): window is QuotaWindow => Boolean(window)),
+      refreshedAt: account.fetchedAt,
+      sourcesTried: [CLAUDE_SWAP_SOURCE],
+      attempts: [{ source: CLAUDE_SWAP_SOURCE, status: "success" }],
+    });
+    const windows = servableStaleWindows(reading, Date.now());
+    if (windows.length > 0) return { ...reading, windows };
+  }
+  const error = claudeSwapError(account);
+  return {
+    ...failedProvider({
+      provider: "claude",
+      label: "Claude",
+      status: "unavailable",
+      error,
+      sourcesTried: [CLAUDE_SWAP_SOURCE],
+      attempts: [{ source: CLAUDE_SWAP_SOURCE, status: "failed", error }],
+    }),
+    account: identity,
+  };
+}
+
+function claudeSwapUnavailableAccount(
+  error: string,
+  remedyCommand?: string,
+): ProviderAccount {
+  return {
+    accountKey: "claude-swap:unavailable",
+    fetchQuota: async () => {
+      const failure = failedProvider({
+        provider: "claude",
+        label: "Claude",
+        status: "unavailable",
+        error,
+        sourcesTried: [CLAUDE_SWAP_SOURCE],
+        attempts: [{ source: CLAUDE_SWAP_SOURCE, status: "failed", error }],
+      });
+      return remedyCommand
+        ? {
+            ...failure,
+            state: { ...failure.state, remedyCommand },
+          }
+        : failure;
+    },
+    inspectAuth: async () => ({ provider: "claude", sources: [] }),
+  };
+}
+
+function claudeSwapReadError(error: unknown): string {
+  const value = error instanceof Error ? error.message : "";
+  return /^claude_swap_(?:unavailable|timed_out|output_too_large|spawn_failed|exit_status|malformed)$/.test(
+    value,
+  )
+    ? value
+    : "claude_swap_malformed";
+}
+
+/** Preserve a bounded claude-swap status as an error code, never raw text. */
+function claudeSwapError(account: ClaudeSwapAccount): string {
+  const status =
+    account.usageStatus !== "ok" && /^[a-z_]{1,40}$/.test(account.usageStatus)
+      ? account.usageStatus
+      : "usage_unavailable";
+  return `claude_swap_${status}`;
 }
 
 /**

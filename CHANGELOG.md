@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.65](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.64...quota-axi-v0.1.65) (2026-10-20)
+
+
+### Features
+
+* **opencode-go:** read OpenCode 2.x credentials from opencode.db ([#341](https://github.com/kunchenguid/quota-axi/issues/341)) ([040fe36](https://github.com/kunchenguid/quota-axi/commit/040fe36178518cc04c21d35742b670fe31225e4d))
+
+## [0.1.64](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.63...quota-axi-v0.1.64) (2026-10-15)
+
+
+### Features
+
+* **tui:** name account lanes by account key in tui.accountLabels ([#335](https://github.com/kunchenguid/quota-axi/issues/335)) ([b3ccf8e](https://github.com/kunchenguid/quota-axi/commit/b3ccf8ed1b3ef6be7d7e920ac51fd620789f2d14))
+
+## [0.1.63](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.62...quota-axi-v0.1.63) (2026-10-15)
+
+
+### Features
+
+* **providers:** report Claude accounts from claude-swap ([#333](https://github.com/kunchenguid/quota-axi/issues/333)) ([5e50b51](https://github.com/kunchenguid/quota-axi/commit/5e50b51653c9bfdf7fa1621b235a49188ce36cb9))
+
 ## [0.1.62](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.61...quota-axi-v0.1.62) (2026-10-14)
 
 
