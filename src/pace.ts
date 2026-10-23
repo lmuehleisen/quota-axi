@@ -342,7 +342,10 @@ export function summarizeEffectivePace(
  * full-utilization rate `1` and aggregates by the minimum across the scope's
  * budget windows - bounds at least `SELECTION_BUDGET_MIN_CYCLE_SECONDS` long -
  * so a sub-day session window's reset sawtooth counts only through runway.
- * When every bound is sub-day those windows are the budget and still score.
+ * When every bound is sub-day those windows are the budget and still score. A
+ * budget bound that contributed no measured pressure (e.g. an untriggered,
+ * fully available one) is a budget on schedule: the scope scores `0` rather
+ * than the session fallback.
  *
  * Any bounding window without usable pace makes the whole scope unmeasurable:
  * an unknown window is never assumed healthy and never defaults to zero. The
@@ -362,10 +365,21 @@ export function summarizeEffectiveSelection(
   let cycleSecondsSum = 0;
   let budgetPressure: number | undefined;
   let sessionPressure: number | undefined;
+  let hasBudgetBound = false;
 
   for (const window of windows) {
     const gap = windowSelectionGap(window);
     const cycleSeconds = finiteNumber(window.pace?.cycleSeconds);
+    // Even an excluded bound (e.g. untriggered, whose pace carries no cycle)
+    // proves the scope has a day-or-longer budget, so its declared duration
+    // also counts and the sub-day fallback cannot take over the score.
+    const boundSeconds = cycleSeconds ?? finiteNumber(window.windowSeconds);
+    if (
+      boundSeconds !== undefined &&
+      boundSeconds >= SELECTION_BUDGET_MIN_CYCLE_SECONDS
+    ) {
+      hasBudgetBound = true;
+    }
     if (gap === undefined || cycleSeconds === undefined || cycleSeconds <= 0) {
       if (!isNotYetTriggeredZeroUse(window)) {
         unmeasurableWindowIds.push(window.id);
@@ -391,7 +405,8 @@ export function summarizeEffectiveSelection(
     return { status: "unknown" };
   }
   const scopeMetric = weightedGapSum / cycleSecondsSum;
-  const spendPressure = budgetPressure ?? sessionPressure;
+  const spendPressure =
+    budgetPressure ?? (hasBudgetBound ? 0 : sessionPressure);
   if (!Number.isFinite(scopeMetric)) {
     return {
       status: "unknown",

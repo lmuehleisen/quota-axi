@@ -1055,6 +1055,38 @@ describe("summarizeEffectiveSelection", () => {
     });
   });
 
+  it("scores an untriggered budget bound as on schedule, not from the session window", () => {
+    const fiveHour = window({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 20,
+      percentRemaining: 80,
+      windowSeconds: FIVE_HOURS_SECONDS,
+      resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+    });
+    fiveHour.pace = computeWindowPace(fiveHour, GENERATED_AT);
+    const weekly = window({
+      id: "seven_day",
+      percentUsed: 0,
+      percentRemaining: 100,
+      windowSeconds: WEEK_SECONDS,
+      // No resetsAt: the budget's clock has not started.
+    });
+    weekly.pace = computeWindowPace(weekly, GENERATED_AT);
+    expect(weekly.pace).toEqual({
+      status: "unknown",
+      reason: "missing_cycle",
+    });
+
+    // The weekly bound is fully available - a budget on schedule at 0 - so
+    // the session's +0.6 must not supply the score through the fallback.
+    expect(summarizeEffectiveSelection([fiveHour, weekly])).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.2,
+      spendPressure: 0,
+    });
+  });
+
   it("splits Codex model bounds by cycle duration, not window kind", () => {
     const readings = [
       window({
