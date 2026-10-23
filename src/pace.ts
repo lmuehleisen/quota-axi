@@ -34,6 +34,13 @@ export const UNOPENED_WINDOW_MAX_FUTURE_START_SKEW_SECONDS = 5 * 60;
  */
 export const SELECTION_MIN_TIME_REMAINING_PERCENT = 0.01;
 
+/**
+ * A scope's budget windows are its bounds whose cycle is at least one day
+ * long. Shorter session windows count toward `spendPressure` only through
+ * runway, except when they are the scope's only bounds.
+ */
+export const SELECTION_BUDGET_MIN_CYCLE_SECONDS = 24 * 60 * 60;
+
 type PaceOptions = {
   stale?: boolean;
 };
@@ -331,6 +338,12 @@ export function summarizeEffectivePace(
  * is on track to reach reset unused; `0` is exact utilization; negative means
  * the window is overdrawn against its reset clock.
  *
+ * `spendPressure` replaces the observed `burnMultiple_w` with the steady
+ * full-utilization rate `1` and aggregates by the minimum across the scope's
+ * budget windows - bounds at least `SELECTION_BUDGET_MIN_CYCLE_SECONDS` long -
+ * so a sub-day session window's reset sawtooth counts only through runway.
+ * When every bound is sub-day those windows are the budget and still score.
+ *
  * Any bounding window without usable pace makes the whole scope unmeasurable:
  * an unknown window is never assumed healthy and never defaults to zero. The
  * one exception is a not-yet-triggered window - no `resetsAt` at all plus zero
@@ -346,8 +359,9 @@ export function summarizeEffectiveSelection(
 
   const unmeasurableWindowIds: string[] = [];
   let weightedGapSum = 0;
-  let weightedPressureSum = 0;
   let cycleSecondsSum = 0;
+  let budgetPressure: number | undefined;
+  let sessionPressure: number | undefined;
 
   for (const window of windows) {
     const gap = windowSelectionGap(window);
@@ -359,7 +373,12 @@ export function summarizeEffectiveSelection(
       continue;
     }
     weightedGapSum += gap * cycleSeconds;
-    weightedPressureSum += windowSelectionGap(window, 1)! * cycleSeconds;
+    const pressure = windowSelectionGap(window, 1)!;
+    if (cycleSeconds >= SELECTION_BUDGET_MIN_CYCLE_SECONDS) {
+      budgetPressure = Math.min(budgetPressure ?? pressure, pressure);
+    } else {
+      sessionPressure = Math.min(sessionPressure ?? pressure, pressure);
+    }
     cycleSecondsSum += cycleSeconds;
   }
 
@@ -372,7 +391,7 @@ export function summarizeEffectiveSelection(
     return { status: "unknown" };
   }
   const scopeMetric = weightedGapSum / cycleSecondsSum;
-  const spendPressure = weightedPressureSum / cycleSecondsSum;
+  const spendPressure = budgetPressure ?? sessionPressure;
   if (!Number.isFinite(scopeMetric)) {
     return {
       status: "unknown",
@@ -384,7 +403,7 @@ export function summarizeEffectiveSelection(
     [SELECTION_SCALAR_KEY]: roundPace(
       clamp(scopeMetric, SELECTION_CLAMP_PERCENT_POINTS),
     ),
-    ...(Number.isFinite(spendPressure)
+    ...(spendPressure !== undefined
       ? {
           spendPressure: roundPace(
             clamp(spendPressure, SELECTION_CLAMP_PERCENT_POINTS),

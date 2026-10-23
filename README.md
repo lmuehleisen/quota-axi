@@ -819,16 +819,17 @@ A bounding window with no `resetsAt` at all has not been triggered yet (e.g. a Z
 
 **This is data, not routing.** quota-axi still never routes, ranks a winner, orders providers preferentially, proxies, logs in, or changes provider quota state. `selection` is a derived comparative _data_ signal computed entirely from figures quota-axi already reports; any routing, ranking, or preference is the consumer's decision. It is also advisory only: it never overrides `runway`, which remains the hard completion-risk evidence a consumer checks against its task horizon.
 
-`selection.spendPressure` is an additive alternative to the unchanged `spendPriority`. It uses the same bounding windows, unknown-state rules, duration weights, rounding, and final `[-100, +100]` clamp, replacing each window's historical `burnMultiple` with the steady full-utilization rate `1`:
+`selection.spendPressure` is an additive alternative to the unchanged `spendPriority`. It uses the same bounding windows, unknown-state rules, rounding, and final `[-100, +100]` clamp, replacing each window's historical `burnMultiple` with the steady full-utilization rate `1`. Instead of the cycle-weighted mean, a scope scores the minimum pressure across its budget windows - bounds whose cycle is a day or longer - so a sub-day session window such as `five_hour` counts only through `runway`. When every bound is sub-day those windows are the budget and still score:
 
 ```text
 pressure_w    = percentRemaining_w / timeRemainingPercent_w - 1
-spendPressure = SUM(pressure_w * cycleSeconds_w) / SUM(cycleSeconds_w)
+spendPressure = MIN(pressure_w) across the scope's windows with cycleSeconds >= one day,
+                or across all of them when every bound is sub-day
 ```
 
-Positive means behind a steady spending schedule, negative means ahead, and zero means on schedule or offsetting window pressures. An unused cycle at its start has `spendPressure: 0` while its legacy `spendPriority` remains `1`. A pressure of `+0.5` means the remaining allowance needs 1.5 times the steady rate. This measures relative catch-up urgency, not monetary value or a forecast of future usage.
+Positive means behind a steady spending schedule, negative means ahead, and zero means the tightest budget window is on schedule. An unused cycle at its start has `spendPressure: 0` while its legacy `spendPriority` remains `1`. A pressure of `+0.5` means the remaining allowance needs 1.5 times the steady rate. This measures relative catch-up urgency, not monetary value or a forecast of future usage.
 
-Both JSON tiers keep the new field on measurable selections. Default TOON appends a `spendPressure` column after `resetsAt`, using `unknown` when unavailable; the introductory examples retain the legacy columns for readability. The existing score and quota schemas 5/6 are unchanged. Consumers must choose one formula consistently across a snapshot, retain unknowns, and check runway before ranking. A long window can outweigh a tight short window: at 20% elapsed and 95% used a five-hour window scores `-0.9375`, while a weekly window at 50% elapsed and 20% used scores `+0.6`; their mean is `+0.5556` despite only 189 seconds of projected short-window runway. Per-window inputs remain available in `--full`; no new window field is added.
+Both JSON tiers keep the new field on measurable selections. Default TOON appends a `spendPressure` column after `resetsAt`, using `unknown` when unavailable; the introductory examples retain the legacy columns for readability. The existing score and quota schemas 5/6 are unchanged. Consumers must choose one formula consistently across a snapshot, retain unknowns, and check runway before ranking. A tight sub-day window no longer moves the score while it still gates runway: at 20% elapsed and 95% used a five-hour window's own pressure is `-0.9375`, but a weekly bound at 50% elapsed and 20% used sets the scope's `+0.6` and the session's 189 seconds of projected runway is what bounds a consumer. Per-window inputs remain available in `--full`; no new window field is added.
 
 ### Quota enums
 
