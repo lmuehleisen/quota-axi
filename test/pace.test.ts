@@ -877,7 +877,7 @@ describe("summarizeEffectiveSelection", () => {
     expect(summarizeEffectiveSelection(readings)).toEqual({
       status: "known",
       [SELECTION_SCALAR_KEY]: 1.0298,
-      spendPressure: 0.5556,
+      spendPressure: 0.6,
     });
     expect(computeEffectiveRunway(readings, GENERATED_AT)).toMatchObject({
       status: "projected_exhaustion",
@@ -968,6 +968,162 @@ describe("summarizeEffectiveSelection", () => {
       (sessionGap + weeklyGap) / 2,
       4,
     );
+  });
+
+  it("scores a steady weekly budget without its session window's reset sawtooth", () => {
+    const fiveHour = window({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 36,
+      percentRemaining: 64,
+      windowSeconds: FIVE_HOURS_SECONDS,
+      resetsAt: resetsAfter(0.99, FIVE_HOURS_SECONDS),
+    });
+    fiveHour.pace = computeWindowPace(fiveHour, GENERATED_AT);
+    const weekly = window({
+      id: "seven_day",
+      percentUsed: 50,
+      percentRemaining: 50,
+      windowSeconds: WEEK_SECONDS,
+      resetsAt: resetsAfter(0.5),
+    });
+    weekly.pace = computeWindowPace(weekly, GENERATED_AT);
+
+    // The weekly budget is exactly on pace; the session's own pressure is +63
+    // three minutes before its reset and must not reach the score.
+    expect(summarizeEffectiveSelection([fiveHour, weekly])).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.8392,
+      spendPressure: 0,
+    });
+  });
+
+  it("takes the minimum across equal-length budget windows", () => {
+    const readings = [
+      window({
+        id: "five_hour",
+        kind: "session",
+        percentUsed: 20,
+        percentRemaining: 80,
+        windowSeconds: FIVE_HOURS_SECONDS,
+        resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+      }),
+      window({
+        id: "seven_day",
+        percentUsed: 20,
+        percentRemaining: 80,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+      window({
+        id: "seven_day_opus",
+        kind: "model",
+        percentUsed: 60,
+        percentRemaining: 40,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+    ];
+    for (const reading of readings) {
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+    }
+
+    // The overspent opus budget binds the scope at -0.2 instead of averaging
+    // to +0.6 against the equal-length weekly.
+    expect(summarizeEffectiveSelection(readings)).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 0.4117,
+      spendPressure: -0.2,
+    });
+  });
+
+  it("still scores a scope whose only bounds are sub-day", () => {
+    const fiveHour = window({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 20,
+      percentRemaining: 80,
+      windowSeconds: FIVE_HOURS_SECONDS,
+      resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+    });
+    fiveHour.pace = computeWindowPace(fiveHour, GENERATED_AT);
+
+    expect(summarizeEffectiveSelection([fiveHour])).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.2,
+      spendPressure: 0.6,
+    });
+  });
+
+  it("scores an untriggered budget bound as on schedule, not from the session window", () => {
+    const fiveHour = window({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 20,
+      percentRemaining: 80,
+      windowSeconds: FIVE_HOURS_SECONDS,
+      resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+    });
+    fiveHour.pace = computeWindowPace(fiveHour, GENERATED_AT);
+    const weekly = window({
+      id: "seven_day",
+      percentUsed: 0,
+      percentRemaining: 100,
+      windowSeconds: WEEK_SECONDS,
+      // No resetsAt: the budget's clock has not started.
+    });
+    weekly.pace = computeWindowPace(weekly, GENERATED_AT);
+    expect(weekly.pace).toEqual({
+      status: "unknown",
+      reason: "missing_cycle",
+    });
+
+    // The weekly bound is fully available - a budget on schedule at 0 - so
+    // the session's +0.6 must not supply the score through the fallback.
+    expect(summarizeEffectiveSelection([fiveHour, weekly])).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.2,
+      spendPressure: 0,
+    });
+  });
+
+  it("splits Codex model bounds by cycle duration, not window kind", () => {
+    const readings = [
+      window({
+        id: "weekly",
+        percentUsed: 50,
+        percentRemaining: 50,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+      window({
+        id: "model:gpt-5:5h",
+        kind: "model",
+        percentUsed: 80,
+        percentRemaining: 20,
+        windowSeconds: FIVE_HOURS_SECONDS,
+        resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+      }),
+      window({
+        id: "model:gpt-5:7d",
+        kind: "model",
+        percentUsed: 60,
+        percentRemaining: 40,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+    ];
+    for (const reading of readings) {
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+    }
+
+    // Both model windows are kind "model": the 7d one is a budget bound at
+    // -0.2 while the sub-day -0.6 acts only through runway.
+    expect(summarizeEffectiveSelection(readings)).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: -0.2147,
+      spendPressure: -0.2,
+    });
   });
 
   it("makes the whole scope unmeasurable when any bound has unknown pace", () => {
