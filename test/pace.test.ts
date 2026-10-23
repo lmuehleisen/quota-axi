@@ -830,6 +830,62 @@ describe("summarizeEffectivePace", () => {
 });
 
 describe("summarizeEffectiveSelection", () => {
+  it.each([
+    [0, 0, 1, 0],
+    [20, 0, 1.25, 0.25],
+    [40, 20, 0.8333, 0.3333],
+    [60, 40, 0.8333, 0.5],
+    [80, 60, 1.25, 1],
+    [90, 70, 2.2222, 2],
+    [5, 20, -3.1579, -0.1579],
+    [50, 100, -2, -1],
+  ])(
+    "keeps legacy priority and adds pressure at %s%% elapsed / %s%% used",
+    (elapsed, used, priority, pressure) => {
+      const reading = window({
+        id: "weekly",
+        percentUsed: used,
+        percentRemaining: 100 - used,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(elapsed / 100),
+      });
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+      expect(reading.pace).not.toHaveProperty("spendPressure");
+      expect(summarizeEffectiveSelection([reading])).toEqual({
+        status: "known",
+        [SELECTION_SCALAR_KEY]: priority,
+        spendPressure: pressure,
+      });
+    },
+  );
+
+  it("keeps a constrained session visible through runway despite positive pressure", () => {
+    const readings = [
+      ["five_hour", 20, 95, FIVE_HOURS_SECONDS],
+      ["weekly", 50, 20, WEEK_SECONDS],
+    ].map(([id, elapsed, used, seconds]) => {
+      const reading = window({
+        id: String(id),
+        percentUsed: Number(used),
+        percentRemaining: 100 - Number(used),
+        windowSeconds: Number(seconds),
+        resetsAt: resetsAfter(Number(elapsed) / 100, Number(seconds)),
+      });
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+      return reading;
+    });
+    expect(summarizeEffectiveSelection(readings)).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.0298,
+      spendPressure: 0.5556,
+    });
+    expect(computeEffectiveRunway(readings, GENERATED_AT)).toMatchObject({
+      status: "projected_exhaustion",
+      usableRunwaySeconds: 189,
+      limitingWindowId: "five_hour",
+    });
+  });
+
   function bounded(
     id: string,
     percentRemaining: number,
@@ -849,115 +905,12 @@ describe("summarizeEffectiveSelection", () => {
     });
   }
 
-  function observed(
-    used: number,
-    elapsed: number,
-    seconds = WEEK_SECONDS,
-  ): QuotaWindow {
-    const reading = window({
-      id: seconds === FIVE_HOURS_SECONDS ? "five_hour" : "weekly",
-      percentUsed: used,
-      percentRemaining: 100 - used,
-      windowSeconds: seconds,
-      resetsAt: resetsAfter(elapsed / 100, seconds),
-    });
-    reading.pace = computeWindowPace(reading, GENERATED_AT);
-    return reading;
-  }
-
-  it.each([
-    [0, 0, 0],
-    [20, 0, 0.25],
-    [40, 20, 0.3333],
-    [60, 40, 0.5],
-    [80, 60, 1],
-    [90, 70, 2],
-    [5, 20, -0.1579],
-    [50, 50, 0],
-    [50, 100, -1],
-  ])(
-    "scores %s%% elapsed / %s%% used against the steady schedule",
-    (elapsed, used, expected) => {
-      const reading = observed(used, elapsed);
-      expect(reading.pace?.spendPressure).toBe(expected);
-      expect(summarizeEffectiveSelection([reading])[SELECTION_SCALAR_KEY]).toBe(
-        expected,
-      );
-    },
-  );
-
-  it("prioritizes a later catch-up over an earlier equal-sized gap", () => {
-    const early = observed(0, 20);
-    const late = observed(60, 80);
-    const score = (reading: QuotaWindow) =>
-      summarizeEffectiveSelection([reading])[SELECTION_SCALAR_KEY]!;
-    expect(score(late)).toBeGreaterThan(score(early));
-    // The previous rate-minus-burn formula tied these two windows at 1.25.
-    expect(100 / 80 - 0 / 20).toBe(40 / 20 - 60 / 80);
-  });
-
-  it("reverses the old preference for a quiet fresh cycle over a late catch-up", () => {
-    const early = observed(0, 5);
-    const late = observed(70, 80);
-    expect(early.pace?.spendPressure).toBe(0.0526);
-    expect(late.pace?.spendPressure).toBe(0.5);
-    const oldEarly = 100 / 95 - 0 / 5;
-    const oldLate = 30 / 20 - 70 / 80;
-    expect(oldEarly).toBeGreaterThan(oldLate);
-    expect(late.pace!.spendPressure!).toBeGreaterThan(
-      early.pace!.spendPressure!,
-    );
-  });
-
-  it("keeps a positive long-window summary separate from a short runway veto", () => {
-    const session = observed(95, 20, FIVE_HOURS_SECONDS);
-    const weekly = observed(20, 50);
-    expect(session.pace?.spendPressure).toBe(-0.9375);
-    expect(weekly.pace?.spendPressure).toBe(0.6);
-    expect(summarizeEffectiveSelection([session, weekly])).toEqual({
-      status: "known",
-      [SELECTION_SCALAR_KEY]: 0.5556,
-    });
-    expect(
-      computeEffectiveRunway([session, weekly], GENERATED_AT),
-    ).toMatchObject({
-      status: "projected_exhaustion",
-      limitingWindowId: "five_hour",
-      usableRunwaySeconds: 189,
-    });
-  });
-
-  it.each([
-    { stale: true },
-    { reset: GENERATED_AT },
-    { reset: "invalid" },
-    { reset: undefined },
-    { reset: resetsAfter(0.99995) },
-  ])(
-    "withholds pressure and selection for unusable cycle evidence %j",
-    ({ stale, reset }) => {
-      const reading = window({
-        id: "weekly",
-        percentUsed: 20,
-        percentRemaining: 80,
-        windowSeconds: WEEK_SECONDS,
-        resetsAt: reset ?? (stale ? resetsAfter(0.5) : undefined),
-      });
-      reading.pace = computeWindowPace(reading, GENERATED_AT, { stale });
-      expect(reading.pace.spendPressure).toBeUndefined();
-      expect(summarizeEffectiveSelection([reading])).toEqual({
-        status: "unknown",
-        unmeasurableWindowIds: ["weekly"],
-      });
-    },
-  );
-
-  it("is positive when remaining consumption must exceed the steady rate", () => {
+  it("is positive when allowance is projected to reach reset unused", () => {
     expect(
       summarizeEffectiveSelection([
         bounded("weekly", 80, { timeRemainingPercent: 40, burnMultiple: 1 }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: 1 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: 1 });
   });
 
   it("is exactly zero at perfect utilization", () => {
@@ -965,18 +918,18 @@ describe("summarizeEffectiveSelection", () => {
       summarizeEffectiveSelection([
         bounded("weekly", 50, { timeRemainingPercent: 50, burnMultiple: 1 }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: 0 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: 0 });
   });
 
-  it("is negative when spending is ahead of the steady schedule", () => {
+  it("is negative when the scope is overdrawn against its reset clock", () => {
     expect(
       summarizeEffectiveSelection([
         bounded("weekly", 10, { timeRemainingPercent: 50, burnMultiple: 2 }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: -0.8 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: -1.8 });
   });
 
-  it("caps positive urgency and bottoms out at -1 for exhausted quota", () => {
+  it("clamps the scalar at both ends", () => {
     expect(
       summarizeEffectiveSelection([
         bounded("weekly", 100, { timeRemainingPercent: 0.02, burnMultiple: 0 }),
@@ -987,7 +940,7 @@ describe("summarizeEffectiveSelection", () => {
       summarizeEffectiveSelection([
         bounded("weekly", 0, { timeRemainingPercent: 50, burnMultiple: 500 }),
       ])[SELECTION_SCALAR_KEY],
-    ).toBe(-1);
+    ).toBe(-SELECTION_CLAMP_PERCENT_POINTS);
   });
 
   it("weights each bounding window by its own cycle length", () => {
@@ -1001,8 +954,8 @@ describe("summarizeEffectiveSelection", () => {
       burnMultiple: 0.7,
       cycleSeconds: WEEK_SECONDS,
     });
-    const sessionGap = 90 / 60 - 1;
-    const weeklyGap = 80 / 50 - 1;
+    const sessionGap = 90 / 60 - 0.25;
+    const weeklyGap = 80 / 50 - 0.7;
     const weighted =
       (sessionGap * FIVE_HOURS_SECONDS + weeklyGap * WEEK_SECONDS) /
       (FIVE_HOURS_SECONDS + WEEK_SECONDS);
@@ -1010,7 +963,7 @@ describe("summarizeEffectiveSelection", () => {
     const summary = summarizeEffectiveSelection([session, weekly]);
     expect(summary.status).toBe("known");
     expect(summary[SELECTION_SCALAR_KEY]).toBeCloseTo(weighted, 4);
-    // Duration weighting remains distinct from an equal-window average.
+    // The unweighted mean would over-credit the short session window.
     expect(summary[SELECTION_SCALAR_KEY]).not.toBeCloseTo(
       (sessionGap + weeklyGap) / 2,
       4,
@@ -1059,7 +1012,7 @@ describe("summarizeEffectiveSelection", () => {
     ).toEqual({ status: "unknown", unmeasurableWindowIds: ["weekly"] });
   });
 
-  it("reports no spending urgency at the start of an unused cycle", () => {
+  it("reads an untouched zero-elapsed window as zero burn, not as unknown", () => {
     expect(
       summarizeEffectiveSelection([
         window({
@@ -1074,10 +1027,10 @@ describe("summarizeEffectiveSelection", () => {
           },
         }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: 0 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: 1 });
   });
 
-  it("does not require historical burn after time has elapsed", () => {
+  it("fails closed when burnMultiple is missing after time has elapsed", () => {
     expect(
       summarizeEffectiveSelection([
         window({
@@ -1092,7 +1045,7 @@ describe("summarizeEffectiveSelection", () => {
           },
         }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: 0.2 });
+    ).toEqual({ status: "unknown", unmeasurableWindowIds: ["weekly"] });
   });
 
   it("fails closed when the weighted sum overflows to a non-finite value", () => {
@@ -1133,9 +1086,9 @@ describe("summarizeEffectiveSelection", () => {
       burnMultiple: 0.5,
     });
 
-    expect(summarizeEffectiveSelection([fiveHour, weekly])).toEqual({
+    expect(summarizeEffectiveSelection([fiveHour, weekly])).toMatchObject({
       status: "known",
-      [SELECTION_SCALAR_KEY]: 0.275,
+      [SELECTION_SCALAR_KEY]: 0.775,
     });
   });
 

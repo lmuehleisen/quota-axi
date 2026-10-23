@@ -100,13 +100,6 @@ export type QuotaPace = {
   reservePercentPoints?: number;
   /** percentUsed / elapsedPercent when elapsedPercent > 0. */
   burnMultiple?: number;
-  /**
-   * percentRemaining / timeRemainingPercent - 1, rounded to four decimals.
-   * Relative to a steady full-utilization rate, not observed historical burn.
-   * Unclamped per-window input to the scope's duration-weighted spendPriority;
-   * absent for unknown pace or less than 0.01% remaining cycle time.
-   */
-  spendPressure?: number;
   /** Linear cycle-average exhaustion timestamp when defined. */
   projectedExhaustedAt?: string;
   projectionConfidence?: "early" | "established";
@@ -164,11 +157,13 @@ export const SELECTION_SCALAR_KEY = "spendPriority";
  *
  * When `status` is `known`, the scalar keyed by `SELECTION_SCALAR_KEY` is the
  * cycle-weighted mean, across the scope's bounding windows, of
- * `percentRemaining / timeRemainingPercent - 1`, clamped to [-100, 100].
- * Positive means behind a steady spending schedule, `0` is on schedule,
- * and negative means ahead. The per-window input is `pace.spendPressure`.
- * Weighting is a heuristic: a long window can outweigh a constrained short
- * window. It does not measure monetary value or predict future consumption.
+ * `percentRemaining / timeRemainingPercent - burnMultiple`, clamped to
+ * [-100, 100]. Each term is the percentage points of paid allowance projected
+ * to reach reset unused, expressed per point of remaining cycle time. Positive
+ * means the scope is on track to forfeit allowance, `0` is exact utilization,
+ * and negative means it is overdrawn against the reset clock. At
+ * `burnMultiple` 1 each term reduces to the window's `reservePercentPoints`
+ * over the same denominator.
  *
  * It is comparative data, not a ranking, an ordering, or a recommendation, and
  * it never supersedes `runway` as the completion-risk gate.
@@ -177,6 +172,14 @@ export type EffectiveSelection = Partial<
   Record<typeof SELECTION_SCALAR_KEY, number>
 > & {
   status: "known" | "unknown";
+  /**
+   * Additive steady-rate score: the same cycle-weighted mean and clamp as
+   * spendPriority, using percentRemaining / timeRemainingPercent - 1.
+   * Positive means behind a steady spending schedule, zero is on schedule
+   * (or offsetting pressures), and negative means ahead. Present only for
+   * measurable selection; never replaces runway as completion-risk evidence.
+   */
+  spendPressure?: number;
   /**
    * Bounding windows that blocked the scalar. Any named window makes the whole
    * scope unmeasurable. Omitted when `status` is `unknown` only because every
@@ -405,8 +408,7 @@ export type ProviderQuota = {
 
 export type QuotaAxiResponse = {
   generatedAt: string;
-  /** 7: steady-rate spendPriority; 8: the same with expanded account lanes. */
-  schemaVersion: 7 | 8;
+  schemaVersion: 5 | 6;
   providers: ProviderQuota[];
   help?: string[];
 };

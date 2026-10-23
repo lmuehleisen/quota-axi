@@ -463,7 +463,7 @@ describe("Higgsfield CLI quota provider", () => {
     const toon = renderQuotaToon(
       {
         generatedAt: GENERATED_AT,
-        schemaVersion: 7,
+        schemaVersion: 5,
         providers: [withSemantics],
       },
       "quota-axi",
@@ -526,7 +526,7 @@ describe("Higgsfield CLI quota provider", () => {
     const toon = renderQuotaToon(
       {
         generatedAt: GENERATED_AT,
-        schemaVersion: 7,
+        schemaVersion: 5,
         providers: [withSemantics],
       },
       "quota-axi",
@@ -782,7 +782,7 @@ describe("Higgsfield CLI quota provider", () => {
     const toon = renderQuotaToon(
       {
         generatedAt: GENERATED_AT,
-        schemaVersion: 7,
+        schemaVersion: 5,
         providers: [withQuotaSemantics(report, GENERATED_AT)],
       },
       "quota-axi",
@@ -945,7 +945,7 @@ describe("Higgsfield CLI quota provider", () => {
     const toon = renderQuotaToon(
       {
         generatedAt: GENERATED_AT,
-        schemaVersion: 7,
+        schemaVersion: 5,
         providers: [report],
       },
       "quota-axi",

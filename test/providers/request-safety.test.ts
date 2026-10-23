@@ -122,7 +122,7 @@ async function fetchSource(source: Source): Promise<ProviderQuota> {
 }
 function assertSafeOutputs(report: ProviderQuota) {
   const response: QuotaAxiResponse = {
-    schemaVersion: 8,
+    schemaVersion: 6,
     generatedAt: new Date().toISOString(),
     providers: [withQuotaSemantics(report, new Date().toISOString())],
   };

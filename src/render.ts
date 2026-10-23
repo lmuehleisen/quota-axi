@@ -42,6 +42,7 @@ type QuotaRow = {
   confidence: string;
   limitedBy: string;
   resetsAt: string;
+  spendPressure: number | string;
 };
 
 /**
@@ -203,6 +204,7 @@ function quotaRow(
     confidence: scope.runway?.projectionConfidence ?? UNKNOWN,
     limitedBy: joinIds(scope.limitingWindowIds) ?? UNKNOWN,
     resetsAt: bindingReset(provider.windows, scope),
+    spendPressure: scope.selection?.spendPressure ?? UNKNOWN,
   };
 }
 
@@ -517,7 +519,6 @@ function auditBlocks(response: QuotaAxiResponse): string[] {
       pace: window.pace?.status ?? UNKNOWN,
       reserve: window.pace?.reservePercentPoints ?? UNKNOWN,
       burnMultiple: window.pace?.burnMultiple ?? UNKNOWN,
-      spendPressure: window.pace?.spendPressure ?? UNKNOWN,
       timeRemainingPercent: window.pace?.timeRemainingPercent ?? UNKNOWN,
       elapsedPercent: window.pace?.elapsedPercent ?? UNKNOWN,
       cycleSeconds: window.pace?.cycleSeconds ?? UNKNOWN,
@@ -746,7 +747,6 @@ function demotedWindow(window: QuotaWindow): QuotaWindow {
             ...(window.pace.reason ? { reason: window.pace.reason } : {}),
             reservePercentPoints: window.pace.reservePercentPoints,
             burnMultiple: window.pace.burnMultiple,
-            spendPressure: window.pace.spendPressure,
           },
         }
       : {}),
