@@ -31,33 +31,17 @@ Run `quota-axi --allow-keychain-prompt` once and approve macOS Keychain access w
 After a successful read, future non-interactive quota calls reuse the corresponding account-scoped grant without requiring the flag. Claude grants are also profile-scoped; legacy Claude markers created before account-pinned lookup are not reused.
 
 ```sh
-$ npx -y quota-axi --provider claude,codex,cursor,copilot,grok,kimi,zai,agy
-bin: ~/.npm/_npx/.../quota-axi
+$ npx -y quota-axi --provider claude
+bin: quota-axi
 description: Report local agent-provider quota windows for routing-aware agents
 generatedAt: "2026-03-15T16:42:00.000Z"
-quota[12]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt}:
-  claude,all_models,64,-0.3798,projected_exhaustion,established,seven_day,"2026-03-20T17:59:45.600Z"
-  claude,seven_day_opus,64,0.3218,projected_exhaustion,established,seven_day,"2026-03-20T17:59:45.600Z"
-  claude,"model:fable",64,-0.0932,projected_exhaustion,established,seven_day,"2026-03-20T17:59:45.600Z"
-  codex,all_models,47,-0.2383,projected_exhaustion,established,weekly,"2026-03-19T09:54:28.800Z"
-  codex,"model:gpt-5.1-codex",47,-0.1973,projected_exhaustion,established,weekly,"2026-03-19T09:54:28.800Z"
-  cursor,all_models,72,1.4067,through_reset,established,included_usage,"2026-04-01T00:00:00.000Z"
-  grok,all_products,67,0.5778,through_reset,established,week,"2026-04-01T00:00:00.000Z"
-  kimi,all_models,74,0.2484,through_reset,established,weekly,"2026-03-20T12:17:02.400Z"
-  zai,all_models,50,-1.0046,projected_exhaustion,established,weekly,"2026-03-20T16:42:00.000Z"
-  zai,tools,100,unknown,unknown,unknown,mcp_month,"2026-04-01T00:00:00.000Z"
-  agy,gemini,88,0.4102,through_reset,established,gemini_weekly,"2026-03-20T00:00:00.000Z"
-  agy,claude_gpt,90,0.3687,through_reset,established,claude_gpt_weekly,"2026-03-21T00:00:00.000Z"
-exhaustion[6]{provider,scope,usableRunwaySeconds,projectedExhaustedAt,limitingWindowId}:
+quota[2]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt}:
+  claude,all_models,64,-0.1051,projected_exhaustion,established,seven_day,"2026-03-20T17:59:45.600Z"
+  claude,"model:fable",64,-0.02,projected_exhaustion,established,seven_day,"2026-03-20T17:59:45.600Z"
+exhaustion[2]{provider,scope,usableRunwaySeconds,projectedExhaustedAt,limitingWindowId}:
   claude,all_models,298906,"2026-03-19T03:43:45.600Z",seven_day
-  claude,seven_day_opus,298906,"2026-03-19T03:43:45.600Z",seven_day
   claude,"model:fable",298906,"2026-03-19T03:43:45.600Z",seven_day
-  codex,all_models,10365,"2026-03-15T19:34:45.428Z",five_hour
-  codex,"model:gpt-5.1-codex",10365,"2026-03-15T19:34:45.428Z",five_hour
-  zai,all_models,172800,"2026-03-17T16:42:00.000Z",weekly
-attention[2]{provider,scope,kind,detail,remedy}:
-  copilot,all,unresolved_windows,chat + premium_interactions,none
-  zai,tools,unmeasurable,"mcp_month blocks runway + spendPriority",none
+attention[0]:
 help[1]:
   Run `quota-axi --full` for windows, pace, reserve, and account evidence
 ```
@@ -70,11 +54,13 @@ Default TOON is decision-shaped: `quota[]` carries one fully populated row per m
 $ quota-axi --provider claude --json
 {
   "generatedAt": "2026-03-15T16:42:00.000Z",
-  "schemaVersion": 5,
+  "schemaVersion": 7,
   "providers": [
     {
       "provider": "claude",
-      "accountKeys": ["default"],
+      "accountKeys": [
+        "default"
+      ],
       "plan": "pro",
       "windows": [
         {
@@ -86,7 +72,8 @@ $ quota-axi --provider claude --json
           "pace": {
             "status": "behind",
             "reservePercentPoints": 12.4,
-            "burnMultiple": 0.5921
+            "burnMultiple": 0.5921,
+            "spendPressure": 0.1782
           }
         },
         {
@@ -98,7 +85,8 @@ $ quota-axi --provider claude --json
           "pace": {
             "status": "ahead",
             "reservePercentPoints": -8.2,
-            "burnMultiple": 1.295
+            "burnMultiple": 1.295,
+            "spendPressure": -0.1136
           }
         },
         {
@@ -110,7 +98,8 @@ $ quota-axi --provider claude --json
           "pace": {
             "status": "behind",
             "reservePercentPoints": 4.5,
-            "burnMultiple": 0.8657
+            "burnMultiple": 0.8657,
+            "spendPressure": 0.0677
           }
         }
       ],
@@ -149,7 +138,7 @@ $ quota-axi --provider claude --json
             },
             "selection": {
               "status": "known",
-              "spendPriority": -0.3798
+              "spendPriority": -0.1051
             }
           },
           {
@@ -181,7 +170,7 @@ $ quota-axi --provider claude --json
             },
             "selection": {
               "status": "known",
-              "spendPriority": -0.0932
+              "spendPriority": -0.02
             }
           }
         ]
@@ -478,7 +467,7 @@ A proven sign-out retires only cached Codex snapshots whose stored account ident
 
 ### Claude profiles
 
-Claude account lanes are opt-in. When neither `QUOTA_AXI_CLAUDE_SWAP` nor a non-empty `QUOTA_AXI_CLAUDE_PROFILES` is set, Claude reads only the profile this process selects, and the report, its schema, and the cache slot it uses are exactly what they are without account discovery: one keyless lane, quota schema 5, `accountKeys: ["default"]`. quota-axi never searches the home directory for other Claude profiles.
+Claude account lanes are opt-in. When neither `QUOTA_AXI_CLAUDE_SWAP` nor a non-empty `QUOTA_AXI_CLAUDE_PROFILES` is set, Claude reads only the profile this process selects, and the report, its schema, and the cache slot it uses are exactly what they are without account discovery: one keyless lane, quota schema 7, `accountKeys: ["default"]`. quota-axi never searches the home directory for other Claude profiles.
 
 ```sh
 QUOTA_AXI_CLAUDE_PROFILES="$HOME/.claude-work:$HOME/.claude-team" quota-axi --provider claude --json
@@ -531,11 +520,11 @@ Codex still discovers and folds its own native and Pi lanes as described above; 
 
 ### Account keys and compatibility
 
-When a provider expands to multiple accounts, the report uses quota `schemaVersion: 6` (auth and models use version 2).
+When a provider expands to multiple accounts, the report uses quota `schemaVersion: 8` (auth and models use version 2).
 Every provider record then has an `accountKey`; providers still using one selected account use the literal `default`.
-Every quota-axi output quota row, in schema 5 and schema 6 alike, has `accountKeys`: the credential keys that one row covers, own `accountKey` first, then any keys folded into it in the order the provider recorded them. The exported `ProviderQuota.accountKeys` type remains optional so package consumers can construct reports without it; quota-axi output sets it on every quota row.
+Every quota-axi output quota row, in schema 7 and schema 8 alike, has `accountKeys`: the credential keys that one row covers, own `accountKey` first, then any keys folded into it in the order the provider recorded them. The exported `ProviderQuota.accountKeys` type remains optional so package consumers can construct reports without it; quota-axi output sets it on every quota row.
 A row covering one credential lists just its own key. A consumer that holds a credential key binds the row whose `accountKeys` contains that key. Matching `accountKey` alone misses a key that was folded into another row.
-A provider without account discovery lists `accountKeys: ["default"]`, the same literal as its schema 6 `accountKey` filler. A discovering provider that stays on one row, such as two Pi keys for one account with no native login, keeps schema 5 and no `accountKey`, and its `accountKeys` starts with that lane's key.
+A provider without account discovery lists `accountKeys: ["default"]`, the same literal as its schema 8 `accountKey` filler. A discovering provider that stays on one row, such as two Pi keys for one account with no native login, keeps schema 7 and no `accountKey`, and its `accountKeys` starts with that lane's key.
 Membership mirrors quota-axi's own grouping exactly: every key the provider grouped into the row, and no other. That grouping relies on stored account identity when no fresh live reading confirms it, so a fold is published as applied even when a later live reading names a different account.
 `accountKeys` is a quota JSON field. Auth still lists each discovered lane on its own, because a fold that depends on the quota reading has not happened there. TOON does not add a column: its flat blocks already name the published lane by `accountKey`, and the membership list is the JSON account row's join field.
 The shared account collector puts each discovered lane's key first; an adapter adds folded keys to its quota reading's `ProviderQuota.accountKeys`, including keys learned during the read. Codex and Claude when `QUOTA_AXI_CLAUDE_PROFILES` or `QUOTA_AXI_CLAUDE_SWAP` opts in are the adapters that discover accounts today; other providers report `default`. The list itself is not cached; Codex reconstructs a stale row's originating key from the cached credential source.
@@ -550,9 +539,9 @@ A lone lane keeps the legacy keyless slot, which the single selected account use
 A key the report cannot publish (malformed or repeated) costs only its own lane: the lanes with usable keys still expand, so one unreadable entry never hides the accounts beside it.
 `--full` adds the vendor identity the usage endpoint supplied, when any.
 
-If no provider expands, existing fields retain their shape and order, while quota JSON adds `accountKeys`: quota schema 5, auth/models schema 1, and no account column.
+If no provider expands, existing fields retain their shape and order, while quota JSON adds `accountKeys`: quota schema 7, auth/models schema 1, and no account column.
 A sole discovered Pi sibling uses that legacy representation.
-Expansion follows the lanes discovered rather than the rows published, so when a native login and a Pi sibling turn out to be one account the single surviving row still carries its key and the report stays schema 6.
+Expansion follows the lanes discovered rather than the rows published, so when a native login and a Pi sibling turn out to be one account the single surviving row still carries its key and the report stays schema 8.
 Consumers must honor the schema version; a legacy keyless row means the single selected lane, and keys must never be inferred from row position.
 
 Account collection is shared in `src/providers/accounts.ts`.
@@ -562,13 +551,13 @@ Other adapters retain their existing source-selection behavior.
 
 ## Output Model
 
-The `quota` command's `--json` emits `schemaVersion: 5`, or `6` when a provider expands to multiple accounts.
+The `quota` command's `--json` emits `schemaVersion: 7`, or `8` when a provider expands to multiple accounts.
 
 ### Normalized schema contract
 
 The package publishes TypeScript declarations from its package root, so consumers can use `import type { QuotaAxiResponse, ModelsResponse } from "quota-axi"`. The adapter contract is `ProviderAdapter` in and normalized `ProviderQuota` out: adapters report observed quota data, never rank, mint credentials, or retain raw responses. The narrowly bounded vendor-owned renewal path is documented under [Delegated credential refresh](#delegated-credential-refresh).
 
-`schemaVersion` is command-specific. Additive fields do not bump it. A semantic or incompatible shape change does. The legacy single-account `quota` report is version 5, `auth` is version 1, and `models` is version 1. When account discovery expands a provider, those versions are 6, 2, and 2 respectively. For quota row membership, see [Account keys and compatibility](#account-keys-and-compatibility).
+`schemaVersion` is command-specific. Additive fields do not bump it. A semantic or incompatible shape change does. The single-account `quota` report is version 7, `auth` is version 1, and `models` is version 1. When account discovery expands a provider, those versions are 8, 2, and 2 respectively. For quota row membership, see [Account keys and compatibility](#account-keys-and-compatibility).
 
 ### Default report blocks
 
@@ -631,9 +620,9 @@ An unknown or stale scope deliberately gets **no** `quota[]` row: the absence of
 | `effectiveAvailability[].pace.behindWindowIds`, `onPaceWindowIds`                                                                              |
 | Account identity (`account`), account-lane `accountLocator`, and per-source `attempts`                                                         |
 
-Everything a consumer branches on stays in the default tier: `accountKey` and `accountKeys` on an account row; `state.status`, `stale`, `authStatus`, `error`, `reason`, `remedyCommand`, `retryAfter`, `untrustedWindowIds`, and `degradedSources`, plus `reused` and a reused reading's `refreshedAt`; window `pace.status`, `reason`, `reservePercentPoints`, `burnMultiple`, and `shareOf` together with that share window's `percentUsed`; `quotaSemantics.status` and `unresolvedWindowIds`; every scope's `effectivePercentRemaining`, `boundedBy`, `limitingWindowIds`, `boundConflict`, `runway`, `selection`, and pace `aheadWindowIds` / `unknownWindowIds` / `worstReservePercentPoints`; provider `jobs` counts; and sparse `notSetUp`. `credits` also stays, so a consumer can avoid misreading it as exhaustion.
+Everything a consumer branches on stays in the default tier: `accountKey` and `accountKeys` on an account row; `state.status`, `stale`, `authStatus`, `error`, `reason`, `remedyCommand`, `retryAfter`, `untrustedWindowIds`, and `degradedSources`, plus `reused` and a reused reading's `refreshedAt`; window `pace.status`, `reason`, `reservePercentPoints`, `burnMultiple`, `spendPressure`, and `shareOf` together with that share window's `percentUsed`; `quotaSemantics.status` and `unresolvedWindowIds`; every scope's `effectivePercentRemaining`, `boundedBy`, `limitingWindowIds`, `boundConflict`, `runway`, `selection`, and pace `aheadWindowIds` / `unknownWindowIds` / `worstReservePercentPoints`; provider `jobs` counts; and sparse `notSetUp`. `credits` also stays, so a consumer can avoid misreading it as exhaustion.
 
-`notSetUp: true` is present only on a provider lane that has positive evidence of absence (the same `providerPresence` classification the human report uses). Every provider stays in `providers[]` on both default `--json` and `--full`; omitting entries would change downstream consumers that look a provider up by id. The field is additive, so `schemaVersion` stays 5, or 6 when a provider expands to multiple accounts. Default TOON is the only output that omits these providers.
+`notSetUp: true` is present only on a provider lane that has positive evidence of absence (the same `providerPresence` classification the human report uses). Every provider stays in `providers[]` on both default `--json` and `--full`; omitting entries would change downstream consumers that look a provider up by id. The field is additive, so `schemaVersion` stays 7, or 8 when a provider expands to multiple accounts. Default TOON is the only output that omits these providers.
 
 `--tui` renders from the complete in-memory model, so demotion never changes what the human report draws. Demotion happens only in the renderer (`quotaJsonReport` and `renderQuotaToon` in `src/render.ts`). Presence for an absence marker and for a TOON omission is classified in `quotaCommand` before redaction.
 
@@ -783,6 +772,8 @@ A bounding window with no `resetsAt` at all has not been triggered yet (e.g. a C
 
 ### Per-scope selection signal
 
+**Migration:** quota schemas 7 (single-account) and 8 (account-expanded) replace 5 and 6 because `spendPriority` now subtracts `1` instead of `burnMultiple`. Row shapes and account membership are unchanged; auth/models and cache schema versions are unchanged. Consumers must accept the new quota versions and treat the score as steady-schedule pressure. Do not compare old and new scores across snapshots. Default TOON keeps the `spendPriority` column in its existing position.
+
 `effectiveAvailability[].selection` is an optional, per-scope object published for every scope quota-axi reports, including `unknown` and stale ones. It is the primary published selection signal: one scalar per scope, comparable across scopes, providers, and accounts. Consumers that need to distinguish accounts can request the optional account identity with `--full`.
 
 In default TOON the scalar is the `spendPriority` column of the scope's `quota[]` row - there is no separate `selection[]` block, at any tier, because the column already carries it. An unmeasurable scalar renders the literal `unknown`, never `0`: `0` is exact utilization, a completely different claim.
@@ -796,26 +787,29 @@ In default TOON the scalar is the `spendPriority` column of the scope's `quota[]
 For each bounding window `w` of the scope:
 
 ```text
-S_w         = percentRemaining_w - burnMultiple_w * timeRemainingPercent_w
-gap_w       = S_w / timeRemainingPercent_w
-scopeMetric = SUM(gap_w * cycleSeconds_w) / SUM(cycleSeconds_w)
+pressure_w  = percentRemaining_w / timeRemainingPercent_w - 1
+scopeMetric = SUM(pressure_w * cycleSeconds_w) / SUM(cycleSeconds_w)
 ```
 
-`S_w` is the percentage points of that window's paid allowance projected to reach reset unused if the observed burn continues. Dividing by `timeRemainingPercent_w` makes windows on different reset clocks comparable, and weighting by `cycleSeconds_w` keeps a short session window from dominating a weekly or monthly one. The result is clamped to `[-100, +100]`.
+With `t` the fraction of the cycle elapsed and `u` the fraction of quota used, the per-window pressure is `(t - u) / (1 - t)`. It measures the required remaining consumption rate relative to a steady rate that uses the whole allowance over one cycle. A pressure of `+0.5` means 1.5 times that steady rate is needed; `+1` means twice the rate. It does not extrapolate historical burn. A newly started, unused cycle scores `0`.
 
-| `spendPriority` | Meaning                                                                                                                     |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Positive        | Paid allowance is on track to reach reset **unused**, so spending here reclaims allowance that would otherwise be forfeited |
-| `0`             | Exact utilization: the scope is projected to finish its cycle with nothing left over and nothing overdrawn                  |
-| Negative        | Overdrawn against the reset clock                                                                                           |
+| `spendPriority` | Meaning                                                            |
+| --------------- | ------------------------------------------------------------------ |
+| Positive        | Behind a steady spending schedule                                  |
+| `0`             | On schedule (or offsetting positive and negative window pressures) |
+| Negative        | Ahead of the steady spending schedule                              |
 
-A higher `spendPriority` therefore marks the scope where spending recovers the most paid allowance that would otherwise expire unused. At `burnMultiple` 1, `S_w` reduces exactly to that window's `reservePercentPoints`; the metric generalizes reserve to projected forfeiture at the observed burn pace.
+The scope keeps its duration-weighted mean and clamps the result to `[-100, +100]`, as before. With valid usage, each pressure is at least `-1`, so the revised mean is at least `-1` too. Higher scores indicate greater relative catch-up urgency, not monetary value, model quality, or a prediction of unused quota.
 
-Any bounding window without usable pace makes the **whole scope** unmeasurable: `status` is `unknown`, no scalar is emitted, and `unmeasurableWindowIds` names the blockers. An unknown window is never assumed healthy and never treated as zero. A window whose remaining cycle time has effectively run out is unmeasurable rather than infinite. The one case where an absent `burnMultiple` is not a gap is a window with zero elapsed cycle time and zero usage: nothing can have been consumed yet, so its observed burn is `0` and the scope stays measurable.
+**Duration weighting is a heuristic, not a capacity check.** A weekly window receives 33.6 times a five-hour window's weight and can outweigh a negative short-window pressure. Taking the maximum would hide short constraints; taking the minimum would turn the spending signal into another bottleneck measure. Consumers must check effective headroom and runway against the task's completion horizon before comparing scores. For example, a five-hour window at 20% elapsed and 95% used scores `-0.9375`, while a weekly window at 50% elapsed and 20% used scores `+0.6`. Their summary is `+0.5556`, but the five-hour window's projected runway is only about 189 seconds: it cannot support a one-hour task regardless of that score.
+
+Each window publishes its own `pace.spendPressure` in both JSON tiers and in the `--full` TOON `windows[]` audit block, identified by that window's `id`. It is rounded to four decimals and is not clamped. The aggregate uses the unrounded pressure computed from the published remaining percentage and four-decimal `timeRemainingPercent`, then rounds and clamps only the final mean. This preserves visibility into opposing windows and avoids clipping one window before weighting.
+
+Any bounding window without usable pace makes the **whole scope** unmeasurable: `status` is `unknown`, no scalar is emitted, and `unmeasurableWindowIds` names the blockers. An unknown window is never assumed healthy or treated as zero. Remaining cycle time below `0.01%` is unmeasurable rather than infinite; the denominator is not artificially extended. Expired cycles and stale readings produce no pressure. `burnMultiple`, exhaustion projections, and confidence keep their historical-rate meaning and no longer determine the spending score.
 
 A bounding window with no `resetsAt` at all has not been triggered yet (e.g. a Z.AI `five_hour` window before its first request this window, whose vendor omits the reset while the window is idle) rather than being a data gap. Under the same rule as the runway aggregate, when that untriggered window also reports zero usage (100% remaining, 0% used) it is treated as fully available and excluded from the weighted mean instead of blocking the scalar, so the scope's other bounding windows still determine `spendPriority`. When every bounding window is untriggered there is no measurable cycle to weight, so the scope publishes no scalar and `spendPriority` renders the literal `unknown`. A missing `resetsAt` paired with any other usage shape (unknown usage, or nonzero usage without an active clock), and a present-but-unparseable `resetsAt`, remain real data gaps that fail closed into `unmeasurableWindowIds`.
 
-`selection` is derived per report from the same `generatedAt` clock as `pace` and `runway`, and is not cached. `summarizeEffectiveSelection` in `src/pace.ts` is its only implementation, and `SELECTION_SCALAR_KEY` in `src/types.ts` is the only spelling of the published field name. `worstReservePercentPoints` is a single-window diagnostic and is not this scalar.
+`selection` is derived per report from the same `generatedAt` clock as `pace` and `runway`, and is not cached. `src/pace.ts` shares the per-window formula between `computeWindowPace` and `summarizeEffectiveSelection`, and `SELECTION_SCALAR_KEY` in `src/types.ts` is the only spelling of the published field name. `worstReservePercentPoints` is a single-window diagnostic and is not this scalar.
 
 **This is data, not routing.** quota-axi still never routes, ranks a winner, orders providers preferentially, proxies, logs in, or changes provider quota state. `selection` is a derived comparative _data_ signal computed entirely from figures quota-axi already reports; any routing, ranking, or preference is the consumer's decision. It is also advisory only: it never overrides `runway`, which remains the hard completion-risk evidence a consumer checks against its task horizon.
 
@@ -904,7 +898,7 @@ Auth source entries can include `credentialPresent` when a source is not genuine
 | Kimi           | Pi's `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) for a literal `kimi-coding` API key or OAuth access token first, then an official Kimi Code CLI access token from the slot `$KIMI_CODE_HOME/config.toml` names (default `$HOME/.kimi-code/`), falling back to `credentials/kimi-code.json` when it names none. Stored-expired tokens are probed; rejected refreshable expiry is soft, not sign-out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Z.AI           | Pi's `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) for a literal Coding Plan `api_key` entry under `zai`, then opencode's `auth.json` (`$XDG_DATA_HOME/opencode/auth.json` when set, `%LOCALAPPDATA%\opencode\auth.json` on Windows, otherwise `~/.local/share/opencode/auth.json`) for a literal key under `zai-coding-plan`, `zai`, `z-ai`, `z.ai`, `zhipu`, or `zhipuai`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Antigravity    | No credential files; prefers the installed CLI's bounded, noninteractive structured `/quota` read (`agy -p "/quota"`, a bounded read, not an agent session), falling back to discovering already-running Antigravity or `agy` processes and reading their 127.0.0.1 read-only loopback endpoints                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Kiro                   | Reads Kiro CLI’s existing access token from its read-only SQLite `auth_kv` store, then an exported `KIRO_API_KEY`, and reports monthly credits from the first-party `Get-Usage-Limits` endpoint. Fractional counters take precedence over rounded counters. Trial, bonus, and add-on pools remain separate; their expiry is not a recurring reset.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Kiro           | Reads Kiro CLI’s existing access token from its read-only SQLite `auth_kv` store, then an exported `KIRO_API_KEY`, and reports monthly credits from the first-party `Get-Usage-Limits` endpoint. Fractional counters take precedence over rounded counters. Trial, bonus, and add-on pools remain separate; their expiry is not a recurring reset.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Alibaba        | The local `bl` CLI (`bl usage token-plan --output json`); quota-axi never reads Alibaba credential files or exchanges refresh data                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | OpenCode Go    | OpenCode 2.x's SQLite database (`$XDG_DATA_HOME/opencode/opencode.db` when set, `%LOCALAPPDATA%\opencode\opencode.db` on Windows, otherwise `~/.local/share/opencode/opencode.db`; `OPENCODE_DB` overrides the file name, resolved against that directory) first, read-only, for the `credential` table's `opencode-go` row OpenCode itself would select (active, then newest) when its value is a literal `{type: "key"}` key; source `opencode:opencode.db`. OAuth and external values are `invalid`. Then, for 1.x installs and as the fallback, the same directory's `auth.json` for a literal `opencode-go` key with `opencode` fallback; source `opencode:auth.json`. A non-release OpenCode channel's `opencode-<channel>.db` is reached through `OPENCODE_DB`. When `QUOTA_AXI_OPENCODE_GO_PI_AUTH` is `1` or `true`, Pi's `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) literal `opencode-go` `api_key` entry is read before both. This is opt-in so an unscoped run does not read an unrelated Pi store. The database is read with `sqlite3 -readonly`; quota-axi never writes it or launches OpenCode. If `sqlite3` is unavailable, that source is reported as skipped with `sqlite3_unavailable` (credential present) when the database file exists, and `auth.json` is still tried; if that key is then rejected, the result is the `sqlite3_unavailable` error rather than a sign-out. Do not install `sqlite3` or any other system package to fill that gap. |
 

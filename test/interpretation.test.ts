@@ -653,7 +653,7 @@ describe("quota semantics", () => {
     );
     expect(
       renderQuotaToon(
-        { generatedAt: GENERATED_AT, schemaVersion: 5, providers: [result] },
+        { generatedAt: GENERATED_AT, schemaVersion: 7, providers: [result] },
         "quota-axi",
         false,
       ),
@@ -683,7 +683,7 @@ describe("quota semantics", () => {
     );
     expect(
       renderQuotaToon(
-        { generatedAt: GENERATED_AT, schemaVersion: 5, providers: [result] },
+        { generatedAt: GENERATED_AT, schemaVersion: 7, providers: [result] },
         "quota-axi",
         false,
       ),
@@ -720,7 +720,7 @@ describe("quota semantics", () => {
         "spend_control",
       ]);
       const report = renderQuotaToon(
-        { generatedAt: GENERATED_AT, schemaVersion: 5, providers: [result] },
+        { generatedAt: GENERATED_AT, schemaVersion: 7, providers: [result] },
         "quota-axi",
         false,
       );
@@ -1498,8 +1498,8 @@ describe("per-scope selection signal", () => {
     const claudeAllModels = scopes(claude).get("all_models");
     const cursorAllModels = scopes(cursor).get("all_models");
 
-    expect(claudeAllModels).toBeCloseTo(0.444, 3);
-    expect(cursorAllModels).toBeCloseTo(0.075, 3);
+    expect(claudeAllModels).toBeCloseTo(0.131, 3);
+    expect(cursorAllModels).toBeCloseTo(0.05, 3);
     expect(claudeAllModels!).toBeGreaterThan(0);
     expect(claudeAllModels!).toBeGreaterThan(cursorAllModels!);
   });
@@ -1508,7 +1508,7 @@ describe("per-scope selection signal", () => {
     const claudeScopes = scopes(claude);
     const fable = claudeScopes.get("model:fable");
 
-    expect(fable).toBeCloseTo(0.794, 3);
+    expect(fable).toBeCloseTo(0.229, 3);
     for (const [scope, value] of claudeScopes) {
       if (scope === "model:fable") continue;
       expect(fable!).toBeGreaterThan(value!);
@@ -1518,7 +1518,7 @@ describe("per-scope selection signal", () => {
   it("scores a near-empty provider that is ahead of pace negative", () => {
     const codexAllModels = scopes(codex).get("all_models");
 
-    expect(codexAllModels).toBeCloseTo(-6.14, 2);
+    expect(codexAllModels).toBeCloseTo(-0.8849, 4);
     expect(codexAllModels!).toBeLessThan(0);
     expect(codexAllModels!).toBeLessThan(scopes(cursor).get("all_models")!);
   });

@@ -85,6 +85,9 @@ export function computeWindowPace(
     pace.burnMultiple = roundPace(percentUsed / elapsedPercent);
   }
 
+  const pressure = windowSpendPressure({ ...window, pace });
+  if (pressure !== undefined) pace.spendPressure = roundPace(pressure);
+
   if (percentUsed > 0 && elapsedMs > 0) {
     const remainingBudget = percentRemaining;
     const burnPerMs = percentUsed / elapsedMs;
@@ -319,17 +322,17 @@ export function summarizeEffectivePace(
 }
 
 /**
- * Cycle-weighted mean, across a scope's bounding windows, of the allowance each
- * window is projected to forfeit at reset if its observed burn continues:
+ * Cycle-weighted mean, across a scope's bounding windows, of the remaining
+ * consumption rate relative to a steady full-utilization rate:
  *
- *   gap_w       = percentRemaining_w / timeRemainingPercent_w - burnMultiple_w
- *   scopeMetric = SUM(gap_w * cycleSeconds_w) / SUM(cycleSeconds_w)
+ *   pressure_w  = percentRemaining_w / timeRemainingPercent_w - 1
+ *   scopeMetric = SUM(pressure_w * cycleSeconds_w) / SUM(cycleSeconds_w)
  *
- * `gap_w` is the per-window projected forfeiture `percentRemaining -
- * burnMultiple * timeRemainingPercent` divided by `timeRemainingPercent`, which
- * makes windows on different cycle clocks comparable. Positive means allowance
- * is on track to reach reset unused; `0` is exact utilization; negative means
- * the window is overdrawn against its reset clock.
+ * Positive means behind a steady spending schedule; `0` is on schedule;
+ * negative means ahead. No historical burn is used. Duration weighting is a
+ * comparative heuristic, not a capacity or monetary-value estimate: a long
+ * window can outweigh a constrained short one. Consumers must check runway
+ * before comparing scores. Per-window `pace.spendPressure` exposes the inputs.
  *
  * Any bounding window without usable pace makes the whole scope unmeasurable:
  * an unknown window is never assumed healthy and never defaults to zero. The
@@ -345,19 +348,23 @@ export function summarizeEffectiveSelection(
   if (windows.length === 0) return { status: "unknown" };
 
   const unmeasurableWindowIds: string[] = [];
-  let weightedGapSum = 0;
+  let weightedPressureSum = 0;
   let cycleSecondsSum = 0;
 
   for (const window of windows) {
-    const gap = windowSelectionGap(window);
+    const pressure = windowSpendPressure(window);
     const cycleSeconds = finiteNumber(window.pace?.cycleSeconds);
-    if (gap === undefined || cycleSeconds === undefined || cycleSeconds <= 0) {
+    if (
+      pressure === undefined ||
+      cycleSeconds === undefined ||
+      cycleSeconds <= 0
+    ) {
       if (!isNotYetTriggeredZeroUse(window)) {
         unmeasurableWindowIds.push(window.id);
       }
       continue;
     }
-    weightedGapSum += gap * cycleSeconds;
+    weightedPressureSum += pressure * cycleSeconds;
     cycleSecondsSum += cycleSeconds;
   }
 
@@ -369,7 +376,7 @@ export function summarizeEffectiveSelection(
     // measurable cycle to weight; the scope publishes no scalar.
     return { status: "unknown" };
   }
-  const scopeMetric = weightedGapSum / cycleSecondsSum;
+  const scopeMetric = weightedPressureSum / cycleSecondsSum;
   if (!Number.isFinite(scopeMetric)) {
     return {
       status: "unknown",
@@ -384,8 +391,8 @@ export function summarizeEffectiveSelection(
   };
 }
 
-/** The per-window selection term, or undefined when the window is unmeasurable. */
-function windowSelectionGap(window: QuotaWindow): number | undefined {
+/** Unclamped pressure, or undefined when the window is unmeasurable. */
+function windowSpendPressure(window: QuotaWindow): number | undefined {
   const pace = window.pace;
   if (pace === undefined || pace.status === "unknown") return undefined;
 
@@ -393,38 +400,17 @@ function windowSelectionGap(window: QuotaWindow): number | undefined {
   const timeRemainingPercent = finiteNumber(pace.timeRemainingPercent);
   if (
     percentRemaining === undefined ||
+    percentRemaining < 0 ||
+    percentRemaining > 100 ||
     timeRemainingPercent === undefined ||
+    timeRemainingPercent > 100 ||
     timeRemainingPercent < SELECTION_MIN_TIME_REMAINING_PERCENT
   ) {
     return undefined;
   }
 
-  const burnMultiple = resolveSelectionBurnMultiple(window, percentRemaining);
-  if (burnMultiple === undefined) return undefined;
-
-  const gap = percentRemaining / timeRemainingPercent - burnMultiple;
-  return Number.isFinite(gap) ? gap : undefined;
-}
-
-/**
- * `computeWindowPace` omits `burnMultiple` only when no cycle time has elapsed
- * yet. Nothing can have been consumed in zero elapsed time, so that single
- * zero-elapsed, zero-use case has an observed burn rate of 0 and keeps the
- * scope measurable. Any other absent `burnMultiple` is a real data gap.
- */
-function resolveSelectionBurnMultiple(
-  window: QuotaWindow,
-  percentRemaining: number,
-): number | undefined {
-  const explicit = finiteNumber(window.pace?.burnMultiple);
-  if (explicit !== undefined) return explicit;
-  const elapsedPercent = finiteNumber(window.pace?.elapsedPercent);
-  const percentUsed =
-    finiteNumber(window.percentUsed) ?? 100 - percentRemaining;
-  if (elapsedPercent === undefined || elapsedPercent > 0 || percentUsed !== 0) {
-    return undefined;
-  }
-  return 0;
+  const pressure = percentRemaining / timeRemainingPercent - 1;
+  return Number.isFinite(pressure) ? pressure : undefined;
 }
 
 function clamp(value: number, bound: number): number {

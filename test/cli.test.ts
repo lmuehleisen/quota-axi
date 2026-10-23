@@ -963,7 +963,7 @@ describe("CLI quota rendering", () => {
     const codex = output.providers.find(
       (provider) => provider.provider === "codex",
     );
-    expect(output.schemaVersion).toBe(5);
+    expect(output.schemaVersion).toBe(7);
     expect(claude?.state.reason).toBe("keychain_access_required");
     expect(claude?.state.remedyCommand).toBe(
       "quota-axi --allow-keychain-prompt",
@@ -1207,10 +1207,10 @@ describe("CLI quota rendering", () => {
       "quota[2]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt}:",
     );
     expect(compact).toContain(
-      'claude,all_models,1,-0.5102,projected_exhaustion,established,five_hour,"2026-07-15T12:06:00.000Z"',
+      'claude,all_models,1,-0.5,projected_exhaustion,established,five_hour,"2026-07-15T12:06:00.000Z"',
     );
     expect(compact).toContain(
-      'codex,all_models,55,-0.4395,projected_exhaustion,established,weekly,"2026-07-20T01:12:00.000Z"',
+      'codex,all_models,55,-0.1538,projected_exhaustion,established,weekly,"2026-07-20T01:12:00.000Z"',
     );
     // Every finite-runway quota row joins one exhaustion row on provider+scope.
     expect(compact).toContain(
@@ -1228,18 +1228,24 @@ describe("CLI quota rendering", () => {
 
     const full = await capture(["--provider", "claude,codex", "--full"]);
     expect(full).toContain(
-      "windows[2]{provider,id,label,percentRemaining,resetsAt,pace,reserve,burnMultiple,timeRemainingPercent,elapsedPercent,cycleSeconds,projectedExhaustedAt,confidence}:",
+      "windows[2]{provider,id,label,percentRemaining,resetsAt,pace,reserve,burnMultiple,spendPressure,timeRemainingPercent,elapsedPercent,cycleSeconds,projectedExhaustedAt,confidence}:",
     );
     expect(full).toContain("scopeAudit[2]{");
     expect(full).toContain("worstReserve");
     expect(full).toMatch(
-      /claude,five_hour,session,1,[^\n]*,on_pace,-1,1\.0102,2,98,18000,/,
+      /claude,five_hour,session,1,[^\n]*,on_pace,-1,1\.0102,-0\.5,2,98,18000,/,
     );
 
     const json = JSON.parse(
       await capture(["--provider", "claude,codex", "--json"]),
     ) as QuotaAxiResponse;
     expect(json.providers[0]?.windows[0]?.pace?.reservePercentPoints).toBe(-1);
+    expect(json.schemaVersion).toBe(7);
+    expect(json.providers[0]?.windows[0]?.pace?.spendPressure).toBe(-0.5);
+    const fullJson = JSON.parse(
+      await capture(["--provider", "claude,codex", "--json", "--full"]),
+    ) as QuotaAxiResponse;
+    expect(fullJson.providers[0]?.windows[0]?.pace?.spendPressure).toBe(-0.5);
   });
 
   it("renders Kimi remaining quota in compact TOON and normalized JSON", async () => {
@@ -1268,7 +1274,7 @@ describe("CLI quota rendering", () => {
     const json = JSON.parse(
       await capture(["--provider", "kimi", "--json"]),
     ) as QuotaAxiResponse;
-    expect(json.schemaVersion).toBe(5);
+    expect(json.schemaVersion).toBe(7);
     expect(json.providers).toEqual([
       expect.objectContaining({
         provider: "kimi",
@@ -2319,8 +2325,8 @@ describe("default TOON decision blocks", () => {
       await capture(["--json", "--full"]),
     ) as QuotaAxiResponse;
 
-    expect(lean.schemaVersion).toBe(5);
-    expect(full.schemaVersion).toBe(5);
+    expect(lean.schemaVersion).toBe(7);
+    expect(full.schemaVersion).toBe(7);
     expect(lean.providers.map((provider) => provider.provider)).toEqual(
       Object.keys(PROVIDERS),
     );
@@ -2380,7 +2386,7 @@ describe("default TOON decision blocks", () => {
     expect(process.exitCode).toBeUndefined();
 
     const json = JSON.parse(await capture(["--json"])) as QuotaAxiResponse;
-    expect(json.schemaVersion).toBe(6);
+    expect(json.schemaVersion).toBe(8);
     expect(json.providers).toHaveLength(Object.keys(PROVIDERS).length + 1);
     const lanes = json.providers.filter(
       (provider) => provider.provider === "codex",
@@ -2892,7 +2898,7 @@ describe("default TOON decision blocks", () => {
     const json = JSON.parse(
       await capture(["--provider", "claude,codex", "--json"]),
     ) as QuotaAxiResponse;
-    expect(json.schemaVersion).toBe(6);
+    expect(json.schemaVersion).toBe(8);
     expect(
       json.providers.map((provider) => [
         provider.provider,
@@ -2920,7 +2926,7 @@ describe("default TOON decision blocks", () => {
     const single = JSON.parse(
       await capture(["--provider", "claude", "--json"]),
     ) as QuotaAxiResponse;
-    expect(single.schemaVersion).toBe(5);
+    expect(single.schemaVersion).toBe(7);
     expect(single.providers[0]?.accountKey).toBeUndefined();
     expect(single.providers[0]?.accountKeys).toEqual(["default"]);
   });
@@ -3033,7 +3039,7 @@ describe("--json tiering", () => {
     ) as QuotaAxiResponse;
     const [claude, cursor, grok, kimi] = json.providers;
 
-    expect(json.schemaVersion).toBe(5);
+    expect(json.schemaVersion).toBe(7);
     expect(claude?.state).toMatchObject({
       status: "stale",
       stale: true,
@@ -3172,7 +3178,7 @@ describe("response redaction", () => {
   it("hides account identity and attempts unless --full is set", () => {
     const response: QuotaAxiResponse = {
       generatedAt: "2026-07-06T18:10:00Z",
-      schemaVersion: 5,
+      schemaVersion: 7,
       providers: [
         {
           provider: "claude",

@@ -92,7 +92,7 @@ function usage(
 }
 
 function responseFor(report: ProviderQuota): QuotaAxiResponse {
-  return { generatedAt: now, schemaVersion: 5, providers: [report] };
+  return { generatedAt: now, schemaVersion: 7, providers: [report] };
 }
 
 describe("Kiro quota", () => {
@@ -112,7 +112,7 @@ describe("Kiro quota", () => {
     expect(report.quotaSemantics?.effectiveAvailability[0]).toMatchObject({
       scope: "included:credit_monthly",
       status: "known",
-      selection: { status: "known", spendPriority: 1.498 },
+      selection: { status: "known", spendPriority: 0.749 },
       runway: { status: "through_reset" },
     });
     expect(fetchMock).toHaveBeenCalledOnce();
