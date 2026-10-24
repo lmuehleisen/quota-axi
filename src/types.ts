@@ -173,10 +173,14 @@ export type EffectiveSelection = Partial<
 > & {
   status: "known" | "unknown";
   /**
-   * Additive steady-rate score: the same cycle-weighted mean and clamp as
-   * spendPriority, using percentRemaining / timeRemainingPercent - 1.
-   * Positive means behind a steady spending schedule, zero is on schedule
-   * (or offsetting pressures), and negative means ahead. Present only for
+   * Additive steady-rate score: the minimum of
+   * percentRemaining / timeRemainingPercent - 1 across the scope's budget
+   * windows - bounds whose cycle is a day or longer - with the same clamp as
+   * spendPriority. Sub-day session windows count only through runway, except
+   * when they are the scope's only bounds; a day-or-longer bound whose cycle
+   * has not started counts as a budget on schedule and scores 0. Positive
+   * means behind a steady spending schedule, zero means the tightest budget
+   * window is on schedule, and negative means ahead. Present only for
    * measurable selection; never replaces runway as completion-risk evidence.
    */
   spendPressure?: number;
