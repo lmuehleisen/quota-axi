@@ -177,10 +177,11 @@ export type EffectiveSelection = Partial<
    * percentRemaining / timeRemainingPercent - 1 across the scope's budget
    * windows - bounds whose cycle is a day or longer - with the same clamp as
    * spendPriority. Sub-day session windows count only through runway, except
-   * when they are the scope's only bounds; a day-or-longer bound whose cycle
-   * has not started counts as a budget on schedule and scores 0. Positive
-   * means behind a steady spending schedule, zero means the tightest budget
-   * window is on schedule, and negative means ahead. Present only for
+   * when they are the scope's only bounds; an unstarted day-or-longer bound
+   * is excluded from the minimum, standing in as a budget on schedule (0)
+   * only when no measured budget pressure exists. Positive means behind a
+   * steady spending schedule, zero means the tightest budget window is on
+   * schedule, and negative means ahead. Present only for
    * measurable selection; never replaces runway as completion-risk evidence.
    */
   spendPressure?: number;
