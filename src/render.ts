@@ -42,6 +42,7 @@ type QuotaRow = {
   confidence: string;
   limitedBy: string;
   resetsAt: string;
+  spendPressure: number | string;
 };
 
 /**
@@ -203,6 +204,7 @@ function quotaRow(
     confidence: scope.runway?.projectionConfidence ?? UNKNOWN,
     limitedBy: joinIds(scope.limitingWindowIds) ?? UNKNOWN,
     resetsAt: bindingReset(provider.windows, scope),
+    spendPressure: scope.selection?.spendPressure ?? UNKNOWN,
   };
 }
 

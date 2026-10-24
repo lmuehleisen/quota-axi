@@ -830,6 +830,62 @@ describe("summarizeEffectivePace", () => {
 });
 
 describe("summarizeEffectiveSelection", () => {
+  it.each([
+    [0, 0, 1, 0],
+    [20, 0, 1.25, 0.25],
+    [40, 20, 0.8333, 0.3333],
+    [60, 40, 0.8333, 0.5],
+    [80, 60, 1.25, 1],
+    [90, 70, 2.2222, 2],
+    [5, 20, -3.1579, -0.1579],
+    [50, 100, -2, -1],
+  ])(
+    "keeps legacy priority and adds pressure at %s%% elapsed / %s%% used",
+    (elapsed, used, priority, pressure) => {
+      const reading = window({
+        id: "weekly",
+        percentUsed: used,
+        percentRemaining: 100 - used,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(elapsed / 100),
+      });
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+      expect(reading.pace).not.toHaveProperty("spendPressure");
+      expect(summarizeEffectiveSelection([reading])).toEqual({
+        status: "known",
+        [SELECTION_SCALAR_KEY]: priority,
+        spendPressure: pressure,
+      });
+    },
+  );
+
+  it("keeps a constrained session visible through runway despite positive pressure", () => {
+    const readings = [
+      ["five_hour", 20, 95, FIVE_HOURS_SECONDS],
+      ["weekly", 50, 20, WEEK_SECONDS],
+    ].map(([id, elapsed, used, seconds]) => {
+      const reading = window({
+        id: String(id),
+        percentUsed: Number(used),
+        percentRemaining: 100 - Number(used),
+        windowSeconds: Number(seconds),
+        resetsAt: resetsAfter(Number(elapsed) / 100, Number(seconds)),
+      });
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+      return reading;
+    });
+    expect(summarizeEffectiveSelection(readings)).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.0298,
+      spendPressure: 0.6,
+    });
+    expect(computeEffectiveRunway(readings, GENERATED_AT)).toMatchObject({
+      status: "projected_exhaustion",
+      usableRunwaySeconds: 189,
+      limitingWindowId: "five_hour",
+    });
+  });
+
   function bounded(
     id: string,
     percentRemaining: number,
@@ -854,7 +910,7 @@ describe("summarizeEffectiveSelection", () => {
       summarizeEffectiveSelection([
         bounded("weekly", 80, { timeRemainingPercent: 40, burnMultiple: 1 }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: 1 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: 1 });
   });
 
   it("is exactly zero at perfect utilization", () => {
@@ -862,7 +918,7 @@ describe("summarizeEffectiveSelection", () => {
       summarizeEffectiveSelection([
         bounded("weekly", 50, { timeRemainingPercent: 50, burnMultiple: 1 }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: 0 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: 0 });
   });
 
   it("is negative when the scope is overdrawn against its reset clock", () => {
@@ -870,7 +926,7 @@ describe("summarizeEffectiveSelection", () => {
       summarizeEffectiveSelection([
         bounded("weekly", 10, { timeRemainingPercent: 50, burnMultiple: 2 }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: -1.8 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: -1.8 });
   });
 
   it("clamps the scalar at both ends", () => {
@@ -912,6 +968,162 @@ describe("summarizeEffectiveSelection", () => {
       (sessionGap + weeklyGap) / 2,
       4,
     );
+  });
+
+  it("scores a steady weekly budget without its session window's reset sawtooth", () => {
+    const fiveHour = window({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 36,
+      percentRemaining: 64,
+      windowSeconds: FIVE_HOURS_SECONDS,
+      resetsAt: resetsAfter(0.99, FIVE_HOURS_SECONDS),
+    });
+    fiveHour.pace = computeWindowPace(fiveHour, GENERATED_AT);
+    const weekly = window({
+      id: "seven_day",
+      percentUsed: 50,
+      percentRemaining: 50,
+      windowSeconds: WEEK_SECONDS,
+      resetsAt: resetsAfter(0.5),
+    });
+    weekly.pace = computeWindowPace(weekly, GENERATED_AT);
+
+    // The weekly budget is exactly on pace; the session's own pressure is +63
+    // three minutes before its reset and must not reach the score.
+    expect(summarizeEffectiveSelection([fiveHour, weekly])).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.8392,
+      spendPressure: 0,
+    });
+  });
+
+  it("takes the minimum across equal-length budget windows", () => {
+    const readings = [
+      window({
+        id: "five_hour",
+        kind: "session",
+        percentUsed: 20,
+        percentRemaining: 80,
+        windowSeconds: FIVE_HOURS_SECONDS,
+        resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+      }),
+      window({
+        id: "seven_day",
+        percentUsed: 20,
+        percentRemaining: 80,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+      window({
+        id: "seven_day_opus",
+        kind: "model",
+        percentUsed: 60,
+        percentRemaining: 40,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+    ];
+    for (const reading of readings) {
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+    }
+
+    // The overspent opus budget binds the scope at -0.2 instead of averaging
+    // to +0.6 against the equal-length weekly.
+    expect(summarizeEffectiveSelection(readings)).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 0.4117,
+      spendPressure: -0.2,
+    });
+  });
+
+  it("still scores a scope whose only bounds are sub-day", () => {
+    const fiveHour = window({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 20,
+      percentRemaining: 80,
+      windowSeconds: FIVE_HOURS_SECONDS,
+      resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+    });
+    fiveHour.pace = computeWindowPace(fiveHour, GENERATED_AT);
+
+    expect(summarizeEffectiveSelection([fiveHour])).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.2,
+      spendPressure: 0.6,
+    });
+  });
+
+  it("scores an untriggered budget bound as on schedule, not from the session window", () => {
+    const fiveHour = window({
+      id: "five_hour",
+      kind: "session",
+      percentUsed: 20,
+      percentRemaining: 80,
+      windowSeconds: FIVE_HOURS_SECONDS,
+      resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+    });
+    fiveHour.pace = computeWindowPace(fiveHour, GENERATED_AT);
+    const weekly = window({
+      id: "seven_day",
+      percentUsed: 0,
+      percentRemaining: 100,
+      windowSeconds: WEEK_SECONDS,
+      // No resetsAt: the budget's clock has not started.
+    });
+    weekly.pace = computeWindowPace(weekly, GENERATED_AT);
+    expect(weekly.pace).toEqual({
+      status: "unknown",
+      reason: "missing_cycle",
+    });
+
+    // The weekly bound is fully available - a budget on schedule at 0 - so
+    // the session's +0.6 must not supply the score through the fallback.
+    expect(summarizeEffectiveSelection([fiveHour, weekly])).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: 1.2,
+      spendPressure: 0,
+    });
+  });
+
+  it("splits Codex model bounds by cycle duration, not window kind", () => {
+    const readings = [
+      window({
+        id: "weekly",
+        percentUsed: 50,
+        percentRemaining: 50,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+      window({
+        id: "model:gpt-5:5h",
+        kind: "model",
+        percentUsed: 80,
+        percentRemaining: 20,
+        windowSeconds: FIVE_HOURS_SECONDS,
+        resetsAt: resetsAfter(0.5, FIVE_HOURS_SECONDS),
+      }),
+      window({
+        id: "model:gpt-5:7d",
+        kind: "model",
+        percentUsed: 60,
+        percentRemaining: 40,
+        windowSeconds: WEEK_SECONDS,
+        resetsAt: resetsAfter(0.5),
+      }),
+    ];
+    for (const reading of readings) {
+      reading.pace = computeWindowPace(reading, GENERATED_AT);
+    }
+
+    // Both model windows are kind "model": the 7d one is a budget bound at
+    // -0.2 while the sub-day -0.6 acts only through runway.
+    expect(summarizeEffectiveSelection(readings)).toEqual({
+      status: "known",
+      [SELECTION_SCALAR_KEY]: -0.2147,
+      spendPressure: -0.2,
+    });
   });
 
   it("makes the whole scope unmeasurable when any bound has unknown pace", () => {
@@ -971,7 +1183,7 @@ describe("summarizeEffectiveSelection", () => {
           },
         }),
       ]),
-    ).toEqual({ status: "known", [SELECTION_SCALAR_KEY]: 1 });
+    ).toMatchObject({ status: "known", [SELECTION_SCALAR_KEY]: 1 });
   });
 
   it("fails closed when burnMultiple is missing after time has elapsed", () => {
@@ -1030,7 +1242,7 @@ describe("summarizeEffectiveSelection", () => {
       burnMultiple: 0.5,
     });
 
-    expect(summarizeEffectiveSelection([fiveHour, weekly])).toEqual({
+    expect(summarizeEffectiveSelection([fiveHour, weekly])).toMatchObject({
       status: "known",
       [SELECTION_SCALAR_KEY]: 0.775,
     });

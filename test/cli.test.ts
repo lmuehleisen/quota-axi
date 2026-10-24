@@ -1204,7 +1204,7 @@ describe("CLI quota rendering", () => {
 
     const compact = await capture(["--provider", "claude,codex"]);
     expect(compact).toContain(
-      "quota[2]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt}:",
+      "quota[2]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt,spendPressure}:",
     );
     expect(compact).toContain(
       'claude,all_models,1,-0.5102,projected_exhaustion,established,five_hour,"2026-07-15T12:06:00.000Z"',
@@ -1240,6 +1240,17 @@ describe("CLI quota rendering", () => {
       await capture(["--provider", "claude,codex", "--json"]),
     ) as QuotaAxiResponse;
     expect(json.providers[0]?.windows[0]?.pace?.reservePercentPoints).toBe(-1);
+    expect(json.schemaVersion).toBe(5);
+    expect(
+      json.providers[0]?.quotaSemantics?.effectiveAvailability[0]?.selection,
+    ).toEqual({
+      status: "known",
+      spendPriority: -0.5102,
+      spendPressure: -0.5,
+    });
+    expect(json.providers[0]?.windows[0]?.pace).not.toHaveProperty(
+      "spendPressure",
+    );
   });
 
   it("renders Kimi remaining quota in compact TOON and normalized JSON", async () => {
@@ -1248,7 +1259,7 @@ describe("CLI quota rendering", () => {
 
     const toon = await capture(["--provider", "kimi"]);
     expect(toon).toContain(
-      "quota[1]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt}:",
+      "quota[1]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt,spendPressure}:",
     );
     expect(toon).toContain(
       'kimi,all_models,67.5,unknown,unknown,unknown,weekly,"2027-02-08T04:05:06.000Z"',
