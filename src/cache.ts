@@ -14,6 +14,7 @@ import { elevenLabsReadingContextId } from "./providers/elevenlabs-cache-context
 import { miniMaxReadingContextId } from "./providers/minimax-cache-context.js";
 import { museReadingContextId } from "./providers/muse-cache-context.js";
 import { kiroReadingContextId } from "./providers/kiro-cache-context.js";
+import { copilotGithubHost } from "./providers/copilot-host.js";
 import { isPiCodexSource } from "./providers/pi-codex-credential.js";
 import { fetchLockPath, withLockSync } from "./lib/fetch-lock.js";
 import { inputsDigest, type TracedInputs } from "./lib/input-trace.js";
@@ -114,7 +115,18 @@ const CONTEXT_SCOPED_PROVIDERS: Partial<
   minimax: miniMaxReadingContextId,
   muse: museReadingContextId,
   kiro: kiroReadingContextId,
+  copilot: copilotReadingContextId,
 };
+
+export function copilotCacheContextId(host: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify(["copilot-host-v1", host]))
+    .digest("hex");
+}
+
+function copilotReadingContextId(): string {
+  return copilotCacheContextId(copilotGithubHost());
+}
 
 /**
  * The stored ChatGPT account id the credential that produced this report named.
@@ -588,6 +600,12 @@ export function readCachedMuseProvider(
   contextId: string,
 ): ProviderQuota | undefined {
   return readCachedProviderInContext("muse", contextId);
+}
+
+export function readCachedCopilotProvider(
+  contextId: string,
+): ProviderQuota | undefined {
+  return readCachedProviderInContext("copilot", contextId);
 }
 
 function readCachedProviderInContext(
