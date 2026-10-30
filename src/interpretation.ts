@@ -1009,7 +1009,10 @@ function agySemantics(
   const claudeGpt = windows.filter(
     ({ id }) => id === "claude_gpt_5h" || id === "claude_gpt_weekly",
   );
-  const resolved = new Set([...gemini, ...claudeGpt]);
+  const geminiArgon = windows.filter(
+    ({ id }) => id === "gemini_argon_5h" || id === "gemini_argon_weekly",
+  );
+  const resolved = new Set([...gemini, ...claudeGpt, ...geminiArgon]);
   const unresolved = windows.filter((window) => !resolved.has(window));
   const effectiveAvailability: EffectiveAvailability[] = [];
   if (gemini.length > 0) {
@@ -1020,18 +1023,26 @@ function agySemantics(
       availability("claude_gpt", claudeGpt, generatedAt),
     );
   }
+  if (geminiArgon.length > 0) {
+    effectiveAvailability.push(
+      availability("gemini_argon", geminiArgon, generatedAt),
+    );
+  }
+  const groupsDescription =
+    geminiArgon.length > 0
+      ? "Antigravity groups Gemini, Gemini Argon, and Claude/GPT windows separately."
+      : "Antigravity groups Gemini windows separately from Claude/GPT windows.";
   if (unresolved.length > 0) {
     return {
       status: effectiveAvailability.length > 0 ? "partial" : "unknown",
-      description:
-        "Antigravity groups Gemini windows separately from Claude/GPT windows. Within a group, the weekly and 5-hour windows jointly bound that group. Unfamiliar windows are not folded into either bound, so they stay unresolved.",
+      description: `${groupsDescription} Within a group, the weekly and 5-hour windows jointly bound that group. Unfamiliar windows are not folded into ${geminiArgon.length > 0 ? "any group" : "either bound"}, so they stay unresolved.`,
       effectiveAvailability,
       unresolvedWindowIds: unresolved.map(({ id }) => id),
     };
   }
   return knownSemantics(
     effectiveAvailability,
-    "Antigravity groups Gemini windows separately from Claude/GPT windows. Within a group, the weekly and 5-hour windows jointly bound that group, so that group's effective remaining percentage is the minimum across the named windows.",
+    `${groupsDescription} Within a group, the weekly and 5-hour windows jointly bound that group, so that group's effective remaining percentage is the minimum across the named windows.`,
   );
 }
 
