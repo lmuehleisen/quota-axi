@@ -145,6 +145,34 @@ describe("Antigravity quota parsing", () => {
     ]);
   });
 
+  it.each([0, "1970-01-01T00:00:00Z"] as const)(
+    "treats epoch reset value %s as no known reset",
+    (resetTime) => {
+      const result = normalizeAgyQuotaSummary({
+        groups: [
+          {
+            name: "Claude and GPT models",
+            buckets: [
+              {
+                id: "3p-5h",
+                window: "5h",
+                remaining_fraction: 1,
+                reset_time: resetTime,
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(result?.windows).toHaveLength(1);
+      expect(result?.windows[0]).toMatchObject({
+        id: "claude_gpt_5h",
+        percentRemaining: 100,
+      });
+      expect(result?.windows[0]?.resetsAt).toBeUndefined();
+    },
+  );
+
   it.each(["window", "bucketId", "bucket_id", "displayName", "name"])(
     "leaves unfamiliar cycles in %s unmeasured",
     (field) => {
@@ -1190,6 +1218,50 @@ exec node "$0-cli.js" "$@"
         boundedBy: ["claude_gpt_5h", "claude_gpt_weekly"],
       },
     ]);
+  });
+
+  it("keeps a fresh reading with epoch-reset unused buckets fresh with known headroom", async () => {
+    const nowIso = "2026-11-25T23:06:00.000Z";
+    const fetched = await fetchQuotaWithRuntime(
+      runtimeWith({
+        ps: "",
+        cliQuota: JSON.stringify(fixture("cli-quota-epoch-reset.json")),
+      }),
+    );
+
+    expect(fetched.state.status).toBe("fresh");
+    expect(fetched.windows).toMatchObject([
+      { id: "gemini_5h", resetsAt: "2026-11-26T00:00:00.000Z" },
+      { id: "gemini_weekly", resetsAt: "2026-12-01T00:00:00.000Z" },
+      { id: "claude_gpt_5h", percentRemaining: 100 },
+      { id: "claude_gpt_weekly", percentRemaining: 100 },
+    ]);
+    expect(
+      fetched.windows.find(({ id }) => id === "claude_gpt_5h")?.resetsAt,
+    ).toBeUndefined();
+    expect(
+      fetched.windows.find(({ id }) => id === "claude_gpt_weekly")?.resetsAt,
+    ).toBeUndefined();
+
+    const result = withQuotaSemantics(fetched, nowIso);
+
+    expect(result.state.status).toBe("fresh");
+    expect(result.state.stale).toBe(false);
+    expect(result.quotaSemantics?.status).toBe("known");
+    expect(result.quotaSemantics?.effectiveAvailability).toContainEqual(
+      expect.objectContaining({
+        scope: "claude_gpt",
+        status: "known",
+        effectivePercentRemaining: 100,
+        boundedBy: ["claude_gpt_5h", "claude_gpt_weekly"],
+      }),
+    );
+    const rendered = renderQuotaToon(
+      { generatedAt: nowIso, schemaVersion: 6, providers: [result] },
+      "quota-axi",
+      false,
+    );
+    expect(rendered).toContain("agy,claude_gpt,100,");
   });
 
   it("marks reading stale when resetsAt is in the past", async () => {
