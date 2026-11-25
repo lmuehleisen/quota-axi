@@ -133,12 +133,8 @@ describe("readTuiAccountLabels", () => {
       ),
     );
 
-    expect(label({ accountKey: "codex:pi:openai-codex-work" })).toBe(
-      "team",
-    );
-    expect(label({ accountKey: "CODEX:pi:openai-codex-work" })).toBe(
-      undefined,
-    );
+    expect(label({ accountKey: "codex:pi:openai-codex-work" })).toBe("team");
+    expect(label({ accountKey: "CODEX:pi:openai-codex-work" })).toBe(undefined);
     expect(
       label({
         accountKey: "profile:aaaaaaaaaaaaaaaaaaaaaaaa",
