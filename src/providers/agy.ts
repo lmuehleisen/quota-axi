@@ -744,7 +744,8 @@ function normalizeQuotaSummaryBucket(
     label,
     kind: windowKind.kind,
     resetsAt:
-      parseEpochOrIso(bucket.resetTime) ?? parseEpochOrIso(bucket.reset_time),
+      parseAgyResetTime(bucket.resetTime) ??
+      parseAgyResetTime(bucket.reset_time),
     resetText: stringValue(bucket.description),
   };
   if (windowKind.windowSeconds !== undefined) {
@@ -783,14 +784,20 @@ function normalizeModelConfigWindow(raw: unknown): QuotaWindow | undefined {
     label,
     kind: "model",
     resetsAt:
-      parseEpochOrIso(quotaInfo.resetTime) ??
-      parseEpochOrIso(quotaInfo.reset_time),
+      parseAgyResetTime(quotaInfo.resetTime) ??
+      parseAgyResetTime(quotaInfo.reset_time),
   };
   if (remaining !== undefined && remaining >= 0 && remaining <= 1) {
     result.percentRemaining = remaining * 100;
     result.percentUsed = clampPercent(100 - result.percentRemaining);
   }
   return result;
+}
+
+function parseAgyResetTime(value: unknown): string | undefined {
+  const parsed = parseEpochOrIso(value);
+  if (!parsed || Date.parse(parsed) === 0) return undefined;
+  return parsed;
 }
 
 function quotaSummaryPayload(
